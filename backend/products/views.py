@@ -1,104 +1,99 @@
 import pandas as pd
-import csv
 from django.http import HttpResponse
 from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework import status
 
-from .models import Product
-from .serializers import ProductSerializer
+from .models import Product, PDFDocument
 from .parsers.pdf_parser import parse_pdf
 
 
-class UploadProductFileView(APIView):
-    """
-    Accepts Excel (.xlsx) or PDF (.pdf)
-    Parses rows and stores products in DB
-    """
-
+class UploadPDFView(APIView):
     def post(self, request):
-        file = request.FILES.get("file")
+        files = request.FILES.getlist("files")
 
-        if not file:
-            return Response(
-                {"error": "No file uploaded"},
-                status=status.HTTP_400_BAD_REQUEST,
+        if not files:
+            return Response({"error": "No PDFs uploaded"}, status=400)
+
+        documents = []
+
+        for pdf in files:
+            df = parse_pdf(pdf)
+
+            document = PDFDocument.objects.create(
+                filename=pdf.name,
+                total_rows=len(df),
             )
-
-        try:
-            if file.name.endswith(".xlsx"):
-                df = pd.read_excel(file)
-
-            elif file.name.endswith(".pdf"):
-                df = parse_pdf(file)
-
-            else:
-                return Response(
-                    {"error": "Only .xlsx and .pdf files are supported"},
-                    status=status.HTTP_400_BAD_REQUEST,
-                )
-
-            products = []
 
             for _, row in df.iterrows():
-                product = Product.objects.create(
-                    product_name=row.get("Product Name", ""),
-                    brand_name=row.get("Brand Name", ""),
-                    product_type=row.get("Product Type", ""),
-                    retail_price=row.get("Retail Price", 0),
-                    sale_price=row.get("Sale Price", 0),
-                    model_number=row.get("Model Number", ""),
-                    color=row.get("Color", ""),
-                    variants=row.get("Variants", ""),
-                    vendor_name=row.get("Vendor Name", ""),
+                Product.objects.create(
+                    document=document,
+                    product_name=row["Product Name"],
+                    brand_name=row["Brand Name"],
+                    product_type=row["Product Type"],
+                    retail_price=row["Retail Price"],
+                    sale_price=row["Sale Price"],
+                    model_number=row["Model Number"],
+                    color=row["Color"],
+                    variants=row["Variants"],
+                    vendor_name=row["Vendor Name"],
                 )
-                products.append(product)
 
-            serializer = ProductSerializer(products, many=True)
-            return Response(serializer.data, status=status.HTTP_201_CREATED)
+            documents.append({
+                "id": document.id,
+                "filename": document.filename,
+                "rows": document.total_rows,
+            })
 
-        except Exception as e:
-            return Response(
-                {"error": str(e)},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
+        return Response(
+            {"message": "PDFs processed", "documents": documents},
+            status=status.HTTP_201_CREATED,
+        )
 
-class ProductListView(APIView):
+class DocumentListView(APIView):
     def get(self, request):
-        products = Product.objects.all().order_by("-created_at")
-        serializer = ProductSerializer(products, many=True)
-        return Response(serializer.data)
+        docs = PDFDocument.objects.all().order_by("-uploaded_at")
 
-class ExportCSVView(APIView):
+        data = [
+            {
+                "id": d.id,
+                "filename": d.filename,
+                "total_rows": d.total_rows,
+                "uploaded_at": d.uploaded_at,
+            }
+            for d in docs
+        ]
+
+        return Response(data)
+
+class ExportExcelView(APIView):
     def get(self, request):
-        response = HttpResponse(content_type="text/csv")
-        response["Content-Disposition"] = 'attachment; filename="products.csv"'
+        products = Product.objects.select_related("document").all()
 
-        writer = csv.writer(response)
+        data = []
+        for p in products:
+            data.append({
+                "Document": p.document.filename,
+                "Product Name": p.product_name,
+                "Brand Name": p.brand_name,
+                "Product Type": p.product_type,
+                "Retail Price": p.retail_price,
+                "Sale Price": p.sale_price,
+                "Model Number": p.model_number,
+                "Color": p.color,
+                "Variants": p.variants,
+                "Vendor Name": p.vendor_name,
+            })
 
-        writer.writerow([
-            "Product Name",
-            "Brand Name",
-            "Product Type",
-            "Retail Price",
-            "Sale Price",
-            "Model Number",
-            "Color",
-            "Variants",
-            "Vendor Name",
-        ])
+        df = pd.DataFrame(data)
 
-        for p in Product.objects.all():
-            writer.writerow([
-                p.product_name,
-                p.brand_name,
-                p.product_type,
-                p.retail_price,
-                p.sale_price,
-                p.model_number,
-                p.color,
-                p.variants,
-                p.vendor_name,
-            ])
+        response = HttpResponse(
+            content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        )
+        response["Content-Disposition"] = 'attachment; filename="products.xlsx"'
 
+        df.to_excel(response, index=False)
         return response
+
+
+

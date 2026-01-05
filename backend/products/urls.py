@@ -1,12 +1,8 @@
 from django.urls import path
-from .views import (
-    UploadProductFileView,
-    ProductListView,
-    ExportCSVView,
-)
+from .views import UploadPDFView, DocumentListView, ExportExcelView
 
 urlpatterns = [
-    path("upload/", UploadProductFileView.as_view()),
-    path("list/", ProductListView.as_view()),
-    path("export/", ExportCSVView.as_view()),
+    path("upload-pdfs/", UploadPDFView.as_view()),
+    path("documents/", DocumentListView.as_view()),
+    path("export-excel/", ExportExcelView.as_view()),
 ]

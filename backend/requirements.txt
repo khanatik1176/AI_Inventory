@@ -12,3 +12,4 @@ sqlparse
 tzdata
 pdfplumber
 drf-spectacular
+django-cors-headers
