@@ -1,0 +1,22 @@
+.idea
+.vscode
+# Byte-compiled / optimized / DLL files
+__pycache__/
+
+
+apps/user/__pycache__/
+apps/location/__pycache__/
+apps/device/__pycache__/
+
+apps/__pycache__/
+conf/__pycache__/
+static/motor_telematics_db_backup.sql
+
+venv/
+.env
+
+db.sqlite3
+*.xlsx
+*.xls
+*.zip
+*.csv

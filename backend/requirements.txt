@@ -1,0 +1,14 @@
+asgiref
+Django
+djangorestframework
+et_xmlfile
+numpy
+openpyxl
+pandas
+python-dateutil
+pytz
+six
+sqlparse
+tzdata
+pdfplumber
+drf-spectacular
