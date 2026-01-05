@@ -95,5 +95,26 @@ class ExportExcelView(APIView):
         df.to_excel(response, index=False)
         return response
 
+class ProductTableView(APIView):
+    def get(self, request):
+        products = Product.objects.select_related("document").all().order_by("-created_at")
+
+        data = []
+        for p in products:
+            data.append({
+                "document": p.document.filename,
+                "product_name": p.product_name,
+                "brand_name": p.brand_name,
+                "product_type": p.product_type,
+                "retail_price": p.retail_price,
+                "sale_price": p.sale_price,
+                "model_number": p.model_number,
+                "color": p.color,
+                "variants": p.variants,
+                "vendor_name": p.vendor_name,
+            })
+
+        return Response(data)
+
 
 
