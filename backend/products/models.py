@@ -25,5 +25,6 @@ class Product(models.Model):
     color = models.CharField(max_length=100, blank=True)
     variants = models.CharField(max_length=255, blank=True)
     vendor_name = models.CharField(max_length=255, blank=True)
+    extra_fields = models.JSONField(default=dict, blank=True)
 
     created_at = models.DateTimeField(auto_now_add=True)
