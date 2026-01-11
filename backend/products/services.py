@@ -1,11 +1,56 @@
-def generate_excerpt(product):
-    return (
-        f"{product.brand_name} {product.product_name} in {product.color} – "
-        f"{product.product_type} at only {product.sale_price}."
+import os
+import json
+from groq import Groq
+
+client = Groq(api_key=os.getenv("GROQ_API_KEY"))
+MODEL = os.getenv("GROQ_MODEL", "llama-3.1-8b-instant")
+
+
+def generate_product_metadata(product: dict) -> dict:
+    """
+    Returns:
+    {
+      "meta_title": "...",
+      "meta_description": "...",
+      "excerpt": "...",
+      "keywords": [...]
+    }
+    """
+
+    prompt = f"""
+Return ONLY valid JSON. No markdown. No extra text.
+
+Generate:
+- meta_title (max 60 chars)
+- meta_description (max 160 chars)
+- excerpt (short marketing line)
+- keywords (array of 6-12 keywords)
+
+Product:
+{json.dumps(product, ensure_ascii=False)}
+""".strip()
+
+    res = client.chat.completions.create(
+        model=MODEL,
+        messages=[
+            {"role": "system", "content": "You are an SEO assistant for an ecommerce inventory website."},
+            {"role": "user", "content": prompt},
+        ],
+        temperature=0.5,
+        max_tokens=300,
     )
 
-def generate_meta_description(product):
-    return (
-        f"Buy {product.brand_name} {product.product_name} "
-        f"({product.model_number}). Available in {product.color}. Order now."
-    )
+    text = res.choices[0].message.content.strip()
+    text = text.replace("```json", "").replace("```", "").strip()
+
+    try:
+        return json.loads(text)
+    except Exception:
+        # fallback so your pipeline never breaks
+        return {
+            "meta_title": product.get("product_name", "")[:60],
+            "meta_description": f"Buy {product.get('brand_name','')} {product.get('product_name','')}".strip()[:160],
+            "excerpt": f"{product.get('brand_name','')} {product.get('product_name','')}".strip(),
+            "keywords": [],
+            "_raw": text[:2000],
+        }

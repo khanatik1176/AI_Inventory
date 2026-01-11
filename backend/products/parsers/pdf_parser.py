@@ -1,214 +1,136 @@
+import re
 import pandas as pd
 import pdfplumber
-from io import BytesIO
-import re
+from typing import Tuple, List, Dict, Any
 
 
-def normalize_column_name(col_name):
-    """
-    Normalize column names for better matching.
-    Removes special characters, extra spaces, and converts to lowercase.
-    """
-    if not col_name:
+KEYWORDS = ["model", "type", "rp", "mrp", "color"]
+
+
+def _clean_cell(v: Any) -> str:
+    if v is None:
         return ""
-    
-    # Convert to string and lowercase
-    col_name = str(col_name).lower().strip()
-    
-    # Remove special characters and extra spaces
-    col_name = re.sub(r'[^\w\s]', '', col_name)
-    col_name = re.sub(r'\s+', ' ', col_name)
-    
-    return col_name
+    s = str(v)
+    s = s.replace("\u00a0", " ")  # nbsp
+    s = s.replace("\n", " ")
+    s = re.sub(r"\s+", " ", s).strip()
+    return s
 
 
-def map_column_to_field(col_name):
-    """
-    Map PDF column names to database field names.
-    Returns the mapped field name or None if it should be excluded.
-    """
-    normalized = normalize_column_name(col_name)
-    
-    # Columns to exclude
-    exclude_patterns = [
-        'sl no', 's/l no', 'serial', 'serial no', 'sn', 'no',
-        'photo', 'photos', 'image', 'images', 'picture', 'pictures',
-        'img', 'awei bangladesh', 'company name', 'header'
-    ]
-    
-    # Check if column should be excluded
-    for pattern in exclude_patterns:
-        if pattern in normalized:
-            return None
-    
-    # Column mapping dictionary - maps various possible names to standard fields
-    column_mapping = {
-        # Product Name variations
-        'product name': 'Product Name',
-        'product': 'Product Name',
-        'name': 'Product Name',
-        'item name': 'Product Name',
-        'item': 'Product Name',
-        
-        # Brand Name variations
-        'brand name': 'Brand Name',
-        'brand': 'Brand Name',
-        'manufacturer': 'Brand Name',
-        
-        # Product Type variations
-        'product type': 'Product Type',
-        'type': 'Product Type',
-        'types': 'Product Type',
-        'category': 'Product Type',
-        'categories': 'Product Type',
-        
-        # Retail Price variations
-        'retail price': 'Retail Price',
-        'retail': 'Retail Price',
-        'rp': 'Retail Price',
-        'price': 'Retail Price',
-        'cost': 'Retail Price',
-        
-        # Sale Price variations
-        'sale price': 'Sale Price',
-        'sale': 'Sale Price',
-        'mrp': 'Sale Price',
-        'selling price': 'Sale Price',
-        'market price': 'Sale Price',
-        
-        # Model Number variations
-        'model number': 'Model Number',
-        'model no': 'Model Number',
-        'model': 'Model Number',
-        'model name': 'Model Number',
-        'sku': 'Model Number',
-        
-        # Color variations
-        'color': 'Color',
-        'colour': 'Color',
-        'colors': 'Color',
-        'colours': 'Color',
-        
-        # Variants variations
-        'variants': 'Variants',
-        'variant': 'Variants',
-        'variation': 'Variants',
-        'variations': 'Variants',
-        'options': 'Variants',
-        
-        # Vendor Name variations
-        'vendor name': 'Vendor Name',
-        'vendor': 'Vendor Name',
-        'supplier': 'Vendor Name',
-        'supplier name': 'Vendor Name',
-    }
-    
-    # Try to find a match
-    if normalized in column_mapping:
-        return column_mapping[normalized]
-    
-    # If no match found, return original column name as-is (for extra fields from PDF)
-    return str(col_name).strip()
+def _normalize_header(h: str) -> str:
+    h = _clean_cell(h)
+    h = h.replace("S/L", "SL").replace("S\\L", "SL")
+    # common spelling inconsistency found in PDFs
+    h = h.replace("Avaiable", "Available")
+    return h
 
 
-def parse_pdf(pdf_file):
+def _header_score(cells: List[str]) -> int:
+    text = " ".join([c.lower() for c in cells if c]).lower()
+    return sum(1 for k in KEYWORDS if k in text)
+
+
+def _is_header_row(cells: List[str]) -> bool:
+    # must contain at least 3 of the keyword signals
+    if _header_score(cells) < 3:
+        return False
+
+    # additionally must include a "MODEL" header explicitly (common in your PDFs)
+    return any("model" in c.lower() for c in cells if c)
+
+
+def _looks_like_brand_banner(cells: List[str]) -> bool:
+    # Many pages start with "QCY BANGLADESH" or "HiFuture Bangladesh"
+    joined = " ".join(cells).lower()
+    return ("bangladesh" in joined and "distributor" in joined) or (
+        len(cells) <= 2 and "bangladesh" in joined
+    )
+
+
+def parse_pdf(pdf_file) -> Tuple[pd.DataFrame, List[str]]:
     """
-    Parse a PDF file and extract tabular data.
-    Returns a DataFrame with mapped columns and list of all columns found.
+    Robust PDF table parser:
+    - Uses pdfplumber.extract_tables() instead of extract_text()
+    - Detects header row inside extracted tables
+    - Supports multiple header sections across pages
+    - Returns:
+        df: DataFrame with extracted rows
+        all_columns: list of union columns found
     """
-    tables = []
-    
-    # Read PDF file
-    pdf_bytes = BytesIO(pdf_file.read())
-    
-    with pdfplumber.open(pdf_bytes) as pdf:
+
+    rows: List[Dict[str, str]] = []
+    all_columns = set()
+
+    with pdfplumber.open(pdf_file) as pdf:
+        current_headers: List[str] = []
+
         for page in pdf.pages:
-            # Extract tables from each page
-            page_tables = page.extract_tables()
-            if page_tables:
-                for table in page_tables:
-                    if table:
-                        tables.extend(table)
-    
-    if not tables:
-        raise ValueError("No tables found in PDF")
-    
-    # Convert to DataFrame
-    if len(tables) > 0:
-        headers = tables[0]
-        data_rows = tables[1:]
-        
-        # Clean and map headers
-        mapped_headers = []
-        columns_to_keep = []
-        original_to_mapped = {}  # Track which columns map to same field
-        
-        for i, h in enumerate(headers):
-            original_header = str(h).strip() if h else f"Column_{i}"
-            mapped_header = map_column_to_field(original_header)
-            
-            # Skip excluded columns
-            if mapped_header is None:
+            tables = page.extract_tables() or []
+            if not tables:
                 continue
-            
-            # Track mapping for merging duplicate standard fields
-            if mapped_header not in original_to_mapped:
-                original_to_mapped[mapped_header] = []
-            original_to_mapped[mapped_header].append(i)
-            
-            mapped_headers.append(mapped_header)
-            columns_to_keep.append(i)
-        
-        # Filter data rows to keep only non-excluded columns
-        filtered_data_rows = []
-        for row in data_rows:
-            filtered_row = [row[i] if i < len(row) else "" for i in columns_to_keep]
-            filtered_data_rows.append(filtered_row)
-        
-        # Create DataFrame with mapped headers
-        df = pd.DataFrame(filtered_data_rows, columns=mapped_headers)
-        
-        # Clean data - replace None with empty string
-        df = df.fillna("")
-        
-        # Remove completely empty rows
-        df = df.replace("", pd.NA).dropna(how="all").fillna("")
-        
-        # Strip whitespace from all string columns
-        for col in df.columns:
-            if df[col].dtype == 'object':
-                df[col] = df[col].astype(str).str.strip()
-        
-        # Merge duplicate standard columns (e.g., multiple columns mapped to "Product Name")
-        # Keep first non-empty value across duplicates
-        seen_columns = set()
-        columns_to_drop = []
-        
-        for col in df.columns:
-            if col in seen_columns:
-                columns_to_drop.append(col)
-            else:
-                seen_columns.add(col)
-        
-        # For duplicate columns, merge their values before dropping
-        for col in set(columns_to_drop):
-            # Get all positions of this column
-            col_positions = [i for i, c in enumerate(df.columns) if c == col]
-            if len(col_positions) > 1:
-                # Merge values: take first non-empty value
-                df.iloc[:, col_positions[0]] = df.iloc[:, col_positions].apply(
-                    lambda x: next((val for val in x if val and str(val).strip()), ""),
-                    axis=1
-                )
-        
-        # Drop duplicate columns (keep first)
-        df = df.loc[:, ~df.columns.duplicated(keep='first')]
-        
-        all_columns = df.columns.tolist()
-        
-        # Remove any remaining empty rows
-        df = df[df.apply(lambda x: x.astype(str).str.strip().ne('').any(), axis=1)]
-        
-        return df, all_columns
-    
-    raise ValueError("Could not parse PDF tables")
+
+            for table in tables:
+                # Table is a list of rows; each row is list of cells
+                for raw_row in table:
+                    cleaned_row = [_clean_cell(c) for c in (raw_row or [])]
+
+                    # skip empty rows
+                    if not any(cleaned_row):
+                        continue
+
+                    # skip brand/banner lines that appear inside tables
+                    if _looks_like_brand_banner(cleaned_row):
+                        continue
+
+                    # detect header row
+                    if _is_header_row(cleaned_row):
+                        headers = [_normalize_header(h) for h in cleaned_row]
+                        # remove empty headers and keep indices
+                        idx_keep = [i for i, h in enumerate(headers) if h]
+                        headers = [headers[i] for i in idx_keep]
+
+                        current_headers = headers
+                        all_columns.update(current_headers)
+                        continue
+
+                    # if no header found yet, can't map data
+                    if not current_headers:
+                        continue
+
+                    # Align row length to header length:
+                    # 1) drop cells where header was empty originally (handled by idx_keep logic above)
+                    # But in case some tables produce extra leading empty cells, trim/pad.
+
+                    data_cells = cleaned_row
+
+                    # If more cells than headers: merge extras into last column
+                    if len(data_cells) > len(current_headers):
+                        data_cells = data_cells[: len(current_headers) - 1] + [
+                            " ".join(data_cells[len(current_headers) - 1 :]).strip()
+                        ]
+
+                    # If fewer cells than headers: pad with empty
+                    if len(data_cells) < len(current_headers):
+                        data_cells = data_cells + [""] * (
+                            len(current_headers) - len(data_cells)
+                        )
+
+                    row_dict = dict(zip(current_headers, data_cells))
+
+                    # Must have MODEL-like value in this row (avoid footers / junk)
+                    # header could be "MODEL" or "Model"
+                    model_key = None
+                    for k in row_dict.keys():
+                        if k.lower() == "model":
+                            model_key = k
+                            break
+                    if model_key and not row_dict.get(model_key, "").strip():
+                        continue
+
+                    rows.append(row_dict)
+
+    df = pd.DataFrame(rows)
+    if not df.empty:
+        df.columns = [_normalize_header(c) for c in df.columns]
+
+    return df, sorted(list(all_columns))

@@ -1,228 +1,163 @@
+import hashlib
+import time
 import pandas as pd
-from django.http import HttpResponse
+
 from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework import status
-import hashlib
-import time
 
 from .models import Product, PDFDocument
 from .parsers.pdf_parser import parse_pdf
+from .services import generate_product_metadata
 
 
-# In-memory set to track recent uploads (simple alternative to cache)
 recent_uploads = {}
 
 def clean_old_uploads():
-    """Remove uploads older than 60 seconds"""
-    current_time = time.time()
-    to_remove = [key for key, timestamp in recent_uploads.items() if current_time - timestamp > 60]
-    for key in to_remove:
-        del recent_uploads[key]
+    now = time.time()
+    for k in list(recent_uploads.keys()):
+        if now - recent_uploads[k] > 60:
+            del recent_uploads[k]
+
+def safe_str(v) -> str:
+    if v is None or (isinstance(v, float) and pd.isna(v)):
+        return ""
+    return str(v).strip()
+
+def safe_float(v) -> float:
+    try:
+        if v is None or (isinstance(v, float) and pd.isna(v)):
+            return 0.0
+        s = str(v).replace(",", "").strip()
+        return float(s) if s else 0.0
+    except Exception:
+        return 0.0
 
 
 class UploadPDFView(APIView):
     def post(self, request):
         files = request.FILES.getlist("files")
-
         if not files:
             return Response({"error": "No PDFs uploaded"}, status=400)
 
-        # Clean old upload records
         clean_old_uploads()
 
-        documents = []
+        uploaded_docs = []
         skipped = []
         errors = []
-        MANDATORY_FIELDS = [
-            "Product Name",
-            "Brand Name",
-            "Product Type",
-            "Retail Price",
-            "Sale Price",
-            "Model Number",
-            "Color",
-            "Variants",
-            "Vendor Name",
-        ]
+
+        # Canonical mapping from your PDFs -> DB fields
+        # PDF examples: MODEL, TYPE, RP, MRP, Color, Key Features... :contentReference[oaicite:6]{index=6}
+        # Some PDFs include MOP too :contentReference[oaicite:7]{index=7}
+        FIELD_MAP = {
+            "MODEL": "product_name",
+            "TYPE": "product_type",
+            "Color": "color",
+            "RP": "sale_price",      # choose your meaning
+            "MRP": "retail_price",
+            "MOP": "variants",       # optional: store separately if you want
+        }
 
         for pdf in files:
-            # Create a unique hash for this file to prevent duplicates
             pdf.seek(0)
-            file_content = pdf.read()
-            file_hash = hashlib.md5(file_content).hexdigest()
+            file_hash = hashlib.md5(pdf.read()).hexdigest()
             pdf.seek(0)
-            
-            # Check if this exact file was uploaded in the last 60 seconds
+
             if file_hash in recent_uploads:
-                skipped.append({
-                    "filename": pdf.name,
-                    "reason": "File upload already in progress or recently completed"
-                })
+                skipped.append({"filename": pdf.name, "reason": "Duplicate upload (recent)"})
                 continue
-            
-            # Mark this file as being processed
             recent_uploads[file_hash] = time.time()
-            
+
             try:
                 df, all_columns = parse_pdf(pdf)
+                if df.empty:
+                    raise ValueError("No table rows found in PDF")
 
-                # Identify extra columns
-                extra_columns = [col for col in all_columns if col not in MANDATORY_FIELDS]
+                document = PDFDocument.objects.create(filename=pdf.name, total_rows=len(df))
 
-                document = PDFDocument.objects.create(
-                    filename=pdf.name,
-                    total_rows=len(df),
-                )
+                # Compute extra columns found (not in our mapping keys)
+                normalized_cols = [c.strip() for c in df.columns.tolist()]
+                extra_cols = [c for c in normalized_cols if c not in FIELD_MAP.keys()]
 
-                for idx, row in df.iterrows():
-                    # Extract extra fields
+                for _, row in df.iterrows():
+                    row_dict = {k: row.get(k, "") for k in normalized_cols}
+
+                    # Build extra_fields from unknown columns
                     extra_fields = {}
-                    for col in extra_columns:
-                        if col in row.index:
-                            val = row[col]
-                            # Handle pandas NA/None values properly
-                            if pd.notna(val) and val != "" and str(val).strip() != "":
-                                extra_fields[col] = str(val).strip()
+                    for col in extra_cols:
+                        val = row_dict.get(col)
+                        if pd.notna(val) and safe_str(val) != "":
+                            extra_fields[col] = safe_str(val)
 
-                    # Convert prices to float, handle None/NaN
-                    retail_price = 0
-                    sale_price = 0
-                    
-                    try:
-                        retail_val = row.get("Retail Price", 0)
-                        if pd.notna(retail_val) and retail_val != "":
-                            retail_price = float(str(retail_val).replace(",", "").strip())
-                    except (ValueError, TypeError, AttributeError):
-                        retail_price = 0
-                        
-                    try:
-                        sale_val = row.get("Sale Price", 0)
-                        if pd.notna(sale_val) and sale_val != "":
-                            sale_price = float(str(sale_val).replace(",", "").strip())
-                    except (ValueError, TypeError, AttributeError):
-                        sale_price = 0
+                    # Build product kwargs from known mapping
+                    kwargs = {
+                        "document": document,
+                        "product_name": safe_str(row_dict.get("MODEL", "")),
+                        "product_type": safe_str(row_dict.get("TYPE", "")),
+                        "color": safe_str(row_dict.get("Color", "")) or safe_str(row_dict.get("COLOR", "")),
+                        "sale_price": safe_float(row_dict.get("RP", 0)),
+                        "retail_price": safe_float(row_dict.get("MRP", 0)),
+                        "variants": safe_str(row_dict.get("MOP", "")),
+                        "extra_fields": extra_fields,
+                    }
 
-                    # Helper function to safely get string value
-                    def safe_str(value):
-                        if pd.isna(value) or value is None or value == "":
-                            return ""
-                        return str(value).strip()
+                    # Optional: infer brand/vendor from filename
+                    lower = pdf.name.lower()
+                    if "hifuture" in lower:
+                        kwargs["brand_name"] = "HiFuture"
+                    elif "qcy" in lower:
+                        kwargs["brand_name"] = "QCY"
+                    elif "soundpeats" in lower:
+                        kwargs["brand_name"] = "SoundPEATS"
 
-                    Product.objects.create(
-                        document=document,
-                        product_name=safe_str(row.get("Product Name", "")),
-                        brand_name=safe_str(row.get("Brand Name", "")),
-                        product_type=safe_str(row.get("Product Type", "")),
-                        retail_price=retail_price,
-                        sale_price=sale_price,
-                        model_number=safe_str(row.get("Model Number", "")),
-                        color=safe_str(row.get("Color", "")),
-                        variants=safe_str(row.get("Variants", "")),
-                        vendor_name=safe_str(row.get("Vendor Name", "")),
-                        extra_fields=extra_fields,
-                    )
+                    Product.objects.create(**kwargs)
 
-                documents.append({
+                uploaded_docs.append({
                     "id": document.id,
                     "filename": document.filename,
                     "rows": document.total_rows,
-                    "extra_fields": extra_columns,
+                    "extra_fields": extra_cols,
                 })
+
             except Exception as e:
-                # Remove from recent uploads if processing failed
                 if file_hash in recent_uploads:
                     del recent_uploads[file_hash]
-                
-                errors.append({
-                    "filename": pdf.name,
-                    "error": str(e)
-                })
-                continue
+                errors.append({"filename": pdf.name, "error": str(e)})
 
-        response_data = {
-            "message": f"Successfully processed {len(documents)} PDF(s)",
-            "uploaded": len(documents),
+        resp = {
+            "uploaded": len(uploaded_docs),
             "skipped": len(skipped),
             "errors": len(errors),
-            "documents": documents,
+            "documents": uploaded_docs,
+            "skipped_files": skipped,
+            "error_files": errors,
         }
-        
-        if skipped:
-            response_data["skipped_files"] = skipped
-            
-        if errors:
-            response_data["error_files"] = errors
-
-        status_code = status.HTTP_201_CREATED if len(documents) > 0 else status.HTTP_400_BAD_REQUEST
-        
-        return Response(response_data, status=status_code)
+        status_code = status.HTTP_201_CREATED if uploaded_docs else status.HTTP_400_BAD_REQUEST
+        return Response(resp, status=status_code)
 
 
 class DocumentListView(APIView):
     def get(self, request):
         docs = PDFDocument.objects.all().order_by("-uploaded_at")
-        total_count = docs.count()
-
-        data = {
-            "count": total_count,
+        return Response({
+            "count": docs.count(),
             "documents": [
                 {
                     "id": d.id,
                     "filename": d.filename,
                     "total_rows": d.total_rows,
                     "uploaded_at": d.uploaded_at,
-                }
-                for d in docs
+                } for d in docs
             ]
-        }
+        })
 
-        return Response(data)
-
-
-class ExportExcelView(APIView):
-    def get(self, request):
-        products = Product.objects.select_related("document").all()
-
-        data = []
-        for p in products:
-            row_data = {
-                "Document": p.document.filename,
-                "Product Name": p.product_name,
-                "Brand Name": p.brand_name,
-                "Product Type": p.product_type,
-                "Retail Price": p.retail_price,
-                "Sale Price": p.sale_price,
-                "Model Number": p.model_number,
-                "Color": p.color,
-                "Variants": p.variants,
-                "Vendor Name": p.vendor_name,
-            }
-            
-            # Add extra fields to the row
-            if p.extra_fields:
-                row_data.update(p.extra_fields)
-            
-            data.append(row_data)
-
-        df = pd.DataFrame(data)
-
-        response = HttpResponse(
-            content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-        )
-        response["Content-Disposition"] = 'attachment; filename="products.xlsx"'
-
-        df.to_excel(response, index=False)
-        return response
-
+from .models import Product
 
 class ProductTableView(APIView):
     def get(self, request):
         products = Product.objects.select_related("document").all().order_by("-created_at")
-        total_count = products.count()
-
-        data = {
-            "count": total_count,
+        return Response({
+            "count": products.count(),
             "products": [
                 {
                     "id": p.id,
@@ -237,9 +172,79 @@ class ProductTableView(APIView):
                     "variants": p.variants,
                     "vendor_name": p.vendor_name,
                     "extra_fields": p.extra_fields,
-                }
-                for p in products
+                    "metadata": p.metadata,
+                } for p in products
             ]
-        }
+        })
 
-        return Response(data)
+from django.http import HttpResponse
+import pandas as pd
+
+class ExportCSVView(APIView):
+    def get(self, request):
+        products = Product.objects.select_related("document").all()
+
+        data = []
+        for p in products:
+            row = {
+                "Document": p.document.filename,
+                "Product Name": p.product_name,
+                "Brand Name": p.brand_name,
+                "Product Type": p.product_type,
+                "Retail Price": p.retail_price,
+                "Sale Price": p.sale_price,
+                "Model Number": p.model_number,
+                "Color": p.color,
+                "Variants": p.variants,
+                "Vendor Name": p.vendor_name,
+                "Metadata": p.metadata,
+            }
+            if p.extra_fields:
+                row.update(p.extra_fields)
+            data.append(row)
+
+        df = pd.DataFrame(data)
+
+        resp = HttpResponse(content_type="text/csv")
+        resp["Content-Disposition"] = 'attachment; filename="products.csv"'
+        df.to_csv(resp, index=False)
+        return resp
+
+class GenerateMetadataView(APIView):
+    def post(self, request):
+        product_ids = request.data.get("product_ids")
+        document_id = request.data.get("document_id")
+
+        qs = Product.objects.all()
+        if product_ids:
+            qs = qs.filter(id__in=product_ids)
+        elif document_id:
+            qs = qs.filter(document_id=document_id)
+        else:
+            return Response({"error": "Provide product_ids or document_id"}, status=400)
+
+        updated = 0
+        failed = []
+
+        for p in qs:
+            try:
+                payload = {
+                    "product_name": p.product_name,
+                    "brand_name": p.brand_name,
+                    "product_type": p.product_type,
+                    "retail_price": p.retail_price,
+                    "sale_price": p.sale_price,
+                    "model_number": p.model_number,
+                    "color": p.color,
+                    "variants": p.variants,
+                    "vendor_name": p.vendor_name,
+                    "extra_fields": p.extra_fields,
+                }
+
+                p.metadata = generate_product_metadata(payload)
+                p.save(update_fields=["metadata"])
+                updated += 1
+            except Exception as e:
+                failed.append({"id": p.id, "error": str(e)})
+
+        return Response({"updated": updated, "failed": failed})

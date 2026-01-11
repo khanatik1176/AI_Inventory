@@ -13,3 +13,5 @@ tzdata
 pdfplumber
 drf-spectacular
 django-cors-headers
+groq
+dotenv

@@ -1,29 +1,9 @@
-const API_BASE = "http://127.0.0.1:8000/api";
+import axios from "axios";
 
-export async function uploadExcel(file: File) {
-  const formData = new FormData();
-  formData.append("file", file);
+export const API_BASE =
+  process.env.NEXT_PUBLIC_API_BASE_URL || "http://127.0.0.1:8000";
 
-  const res = await fetch(`${API_BASE}/products/upload/`, {
-    method: "POST",
-    body: formData,
-  });
-
-  if (!res.ok) {
-    throw new Error("Upload failed");
-  }
-
-  return res.json();
-}
-
-export async function getProducts() {
-  const res = await fetch(`${API_BASE}/products/list/`, {
-    cache: "no-store",
-  });
-
-  return res.json();
-}
-
-export function downloadCSV() {
-  window.location.href = `${API_BASE}/products/export/`;
-}
+export const api = axios.create({
+  baseURL: API_BASE,
+  timeout: 120000, // 2 minutes for large PDFs
+});
