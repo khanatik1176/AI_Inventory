@@ -16,18 +16,19 @@ from .services import generate_product_metadata, fetch_seo_suggestions, create_s
 
 recent_uploads = {}
 
+
 def clean_old_uploads():
     now = time.time()
     for k in list(recent_uploads.keys()):
         if now - recent_uploads[k] > 60:
             del recent_uploads[k]
 
+
 def safe_str(v) -> str:
-    if v is None:
-        return ""
-    if isinstance(v, float) and pd.isna(v):
+    if v is None or (isinstance(v, float) and pd.isna(v)):
         return ""
     return str(v).strip()
+
 
 def safe_float(v) -> float:
     try:
@@ -38,68 +39,46 @@ def safe_float(v) -> float:
     except Exception:
         return 0.0
 
-def normalize_key(k: str) -> str:
-    k = safe_str(k)
-    k = re.sub(r"\s+", " ", k).strip()
-    return k.upper()
 
-def slug_join(*parts: str) -> str:
-    cleaned = []
-    for p in parts:
-        p = safe_str(p)
-        p = p.replace("/", " ").replace("|", " ")
-        p = " ".join(p.split())
-        p = p.replace(" ", "-")
-        p = "".join(ch for ch in p if ch.isalnum() or ch in "-_")
-        if p:
-            cleaned.append(p)
-    return "-".join(cleaned)
+def normalize_header(h: str) -> str:
+    h = safe_str(h)
+    h = re.sub(r"\s+", " ", h).strip()
+    h = h.replace("S/L", "SL")
+    return h.upper()
 
-def is_valid_product_row(base_name: str, product_type: str, sale: float, retail: float) -> bool:
-    # Must have a model/base name
-    if not safe_str(base_name):
+
+def slug_join(*parts) -> str:
+    return "-".join(str(p).strip() for p in parts if p and str(p).strip())
+
+
+def is_valid_product_row(model: str, ptype: str, rp: float, mrp: float) -> bool:
+    m = safe_str(model)
+    t = safe_str(ptype).upper()
+
+    if not m:
         return False
 
-    # Reject footers / random strings
-    joined = f"{base_name} {product_type}".lower()
-    if "official distributor" in joined or "price list" in joined:
+    joined = f"{m} {t}".lower()
+    if "model" in joined and "type" in joined:
         return False
-
-    # Optional: reject if all prices are zero AND looks like junk
-    if sale == 0.0 and retail == 0.0 and len(base_name) < 2:
+    if m.upper() in ("MODEL", "S/L NO", "SL NO"):
         return False
 
     return True
 
-def detect_brand_from_pdf(pdf_file, filename="") -> str:
-    fn = (filename or "").upper()
 
-    # filename fallback
-    if "SOUNDPEATS" in fn:
+def detect_brand_from_filename(filename: str) -> str:
+    f = (filename or "").upper()
+    if "SOUNDPEATS" in f:
         return "SoundPEATS"
-    if "QCY" in fn:
+    if "QCY" in f:
         return "QCY"
-    if "HIFUTURE" in fn or "HI-FUTURE" in fn or "HI FUTURE" in fn:
+    if "HIFUTURE" in f or "HI-FUTURE" in f or "HI FUTURE" in f:
         return "HiFuture"
-
-    # PDF text fallback (first 2 pages)
-    try:
-        import pdfplumber
-        pdf_file.seek(0)
-        with pdfplumber.open(pdf_file) as pdf:
-            text = " ".join((p.extract_text() or "") for p in pdf.pages[:2]).upper()
-        if "SOUNDPEATS" in text:
-            return "SoundPEATS"
-        if "QCY" in text:
-            return "QCY"
-        if "HIFUTURE" in text or "HI-FUTURE" in text or "HI FUTURE" in text:
-            return "HiFuture"
-    except Exception:
-        pass
-
     return ""
 
 
+# ...existing imports and helper functions (keep everything as is)...
 
 class UploadPDFView(APIView):
     def post(self, request):
@@ -113,17 +92,12 @@ class UploadPDFView(APIView):
 
         clean_old_uploads()
 
-        uploaded_docs, skipped, errors = [], [], []
-
-        def pick(row_dict, *keys):
-            for k in keys:
-                if k in row_dict and safe_str(row_dict[k]):
-                    return row_dict[k]
-            return ""
+        uploaded_docs = []
+        skipped = []
+        errors = []
 
         for pdf in files:
             try:
-                # Hash for dedupe by content (NOT filename)
                 pdf.seek(0)
                 file_bytes = pdf.read()
                 pdf_hash = hashlib.md5(file_bytes).hexdigest()
@@ -134,16 +108,15 @@ class UploadPDFView(APIView):
                     continue
 
                 if pdf_hash in recent_uploads:
-                    skipped.append({"filename": pdf.name, "reason": "Recent duplicate upload"})
+                    skipped.append({"filename": pdf.name, "reason": "Duplicate upload (recent)"})
                     continue
                 recent_uploads[pdf_hash] = time.time()
 
-                # Parse all pages
-                df, _ = parse_pdf(pdf)
+                df, all_columns = parse_pdf(pdf)
                 if df.empty:
                     raise ValueError("No table rows found in PDF")
 
-                brand = detect_brand_from_pdf(pdf, pdf.name)
+                brand = detect_brand_from_filename(pdf.name)
 
                 document = PDFDocument.objects.create(
                     filename=pdf.name,
@@ -153,7 +126,11 @@ class UploadPDFView(APIView):
                 )
 
                 inserted = 0
-                extra_cols = set()
+                all_extra_fields = set()
+
+                # ✅ Model columns that parser already handles
+                MODEL_COLS = {"MODEL", "TYPE", "COLOR", "RP", "MRP"}
+
                 for _, row in df.iterrows():
                     base_name = safe_str(row.get("MODEL"))
                     product_type = safe_str(row.get("TYPE"))
@@ -161,25 +138,25 @@ class UploadPDFView(APIView):
                     sale_price = safe_float(row.get("RP"))
                     retail_price = safe_float(row.get("MRP"))
 
-                    # strong row validation (kills dummy rows)
-                    if not base_name or not product_type:
-                        continue
-                    if sale_price <= 0 and retail_price <= 0:
+                    if not is_valid_product_row(base_name, product_type, sale_price, retail_price):
                         continue
 
-                    # Collect extra columns
+                    # ✅ Extract extra fields (everything except model columns)
                     extra_fields = {}
-                    for k in row.keys():
-                        norm_k = normalize_key(k)
-                        if norm_k not in {"MODEL", "TYPE", "COLOR", "RP", "MRP"}:
-                            extra_fields[norm_k] = safe_str(row.get(k))
-                            extra_cols.add(norm_k)
+                    for col in df.columns:
+                        if col in MODEL_COLS:
+                            continue
+                        
+                        val = safe_str(row.get(col))
+                        if val:
+                            extra_fields[col] = val
+                            all_extra_fields.add(col)
 
                     Product.objects.create(
                         document=document,
-                        base_name=base_name,          # ✅ keep original extracted model
-                        product_name=base_name,       # ✅ shown initially
-                        brand_name=brand or "SoundPEATS",  # fallback if needed
+                        base_name=base_name,
+                        product_name=base_name,
+                        brand_name=brand,
                         product_type=product_type,
                         retail_price=retail_price,
                         sale_price=sale_price,
@@ -189,6 +166,7 @@ class UploadPDFView(APIView):
                         extra_fields=extra_fields,
                     )
                     inserted += 1
+
                 document.total_rows = inserted
                 document.save(update_fields=["total_rows"])
 
@@ -197,7 +175,7 @@ class UploadPDFView(APIView):
                     "filename": document.filename,
                     "rows": document.total_rows,
                     "vendor_name": document.vendor_name,
-                    "extra_fields": list(extra_cols),
+                    "extra_fields": sorted(list(all_extra_fields)),
                 })
 
             except Exception as e:
@@ -211,6 +189,7 @@ class UploadPDFView(APIView):
             "skipped_files": skipped,
             "error_files": errors,
         }
+
         status_code = status.HTTP_201_CREATED if uploaded_docs else status.HTTP_400_BAD_REQUEST
         return Response(resp, status=status_code)
 
@@ -341,14 +320,11 @@ class GenerateFormattedNameView(APIView):
                     failed.append({"id": p.id, "error": "seo_name missing"})
                     continue
 
-                # only once
                 if p.formatted_name_generated:
                     failed.append({"id": p.id, "error": "already generated once"})
                     continue
 
                 base = p.base_name or p.product_name
-
-                # ✅ uses REAL seo_name (not hardcoded)
                 new_name = slug_join(p.brand_name, base, p.product_type, p.seo_name)
 
                 p.product_name = new_name
