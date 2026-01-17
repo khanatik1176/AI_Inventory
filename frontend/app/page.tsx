@@ -2,24 +2,30 @@
 
 import Link from "next/link";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import toast from "react-hot-toast";
 import { api, API_BASE } from "@/lib/api";
 
 type Product = {
   id?: number;
   document: string;
+
   product_name: string;
-  seo_name?: string;
   brand_name: string;
   product_type: string;
+
   retail_price: number;
   sale_price: number;
+
   model_number: string;
   color: string;
   variants: string;
+
   vendor_name: string;
+
   extra_fields?: Record<string, any>;
   metadata?: Record<string, any>;
+  seo_name?: string;
+
+  formatted_name_generated?: boolean;
 };
 
 type Doc = {
@@ -27,6 +33,7 @@ type Doc = {
   filename: string;
   total_rows: number;
   uploaded_at: string;
+  vendor_name?: string;
   extra_fields?: string[];
 };
 
@@ -34,24 +41,43 @@ function classNames(...c: Array<string | false | null | undefined>) {
   return c.filter(Boolean).join(" ");
 }
 
+const ENDPOINTS = {
+  UPLOAD: "/api/products/upload-pdfs/",
+  DOCS: "/api/products/documents/",
+  LIST: "/api/products/list/",
+  EXPORT_CSV: `${API_BASE}/api/products/export-csv/`,
+
+  GENERATE_METADATA: "/api/products/generate-metadata/",
+  GENERATE_ONLINE_SEO_NAME: "/api/products/generate-online-seo-name/",
+  GENERATE_FORMATTED_NAME: "/api/products/generate-formatted-name/",
+};
+
 export default function Page() {
   const [files, setFiles] = useState<File[]>([]);
   const [docs, setDocs] = useState<Doc[]>([]);
   const [products, setProducts] = useState<Product[]>([]);
-  const [openDocIds, setOpenDocIds] = useState<Record<number, boolean>>({});
 
-  // Documents section collapsible (default collapsed)
-  const [docsCollapsed, setDocsCollapsed] = useState(true);
+  const [openDocs, setOpenDocs] = useState(false);
 
   const [loadingUpload, setLoadingUpload] = useState(false);
   const [loadingMeta, setLoadingMeta] = useState(false);
-  const [loadingSeoOnline, setLoadingSeoOnline] = useState(false);
-  const [loadingFormatName, setLoadingFormatName] = useState(false);
+  const [loadingSeo, setLoadingSeo] = useState(false);
+  const [loadingName, setLoadingName] = useState(false);
+
+  const [error, setError] = useState<string | null>(null);
+  const [success, setSuccess] = useState<string | null>(null);
 
   const [allExtraFields, setAllExtraFields] = useState<Set<string>>(new Set());
   const [selectedProductIds, setSelectedProductIds] = useState<Set<number>>(
     new Set()
   );
+
+  const [vendorName, setVendorName] = useState("");
+
+  // ✅ pagination state
+  const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState(20);
+  const [totalPages, setTotalPages] = useState(1);
 
   const fileInputRef = useRef<HTMLInputElement>(null);
   const uploadingRef = useRef(false);
@@ -61,38 +87,161 @@ export default function Page() {
     [products]
   );
 
-  const anyLoading =
-    loadingUpload ||
-    loadingMeta ||
-    loadingSeoOnline ||
-    loadingFormatName ||
-    uploadingRef.current;
+  const selectedCount = selectedProductIds.size;
 
   const fetchDocs = useCallback(async () => {
-    const res = await api.get("/api/products/documents/");
-    setDocs(res.data.documents || res.data);
+    try {
+      const res = await api.get(ENDPOINTS.DOCS);
+      setDocs(res.data.documents || res.data || []);
+    } catch (e) {
+      console.error(e);
+      setError("Failed to fetch documents");
+    }
   }, []);
 
   const fetchProducts = useCallback(async () => {
-    const res = await api.get("/api/products/list/");
-    const productsData = res.data.products || res.data;
-    setProducts(productsData);
+    try {
+      const res = await api.get(
+        `${ENDPOINTS.LIST}?page=${page}&page_size=${pageSize}`
+      );
+      const productsData = res.data.products || [];
+      setProducts(productsData);
+      setTotalPages(res.data.total_pages || 1);
 
-    const extraFieldKeys = new Set<string>();
-    productsData.forEach((p: Product) => {
-      if (p.extra_fields) {
-        Object.keys(p.extra_fields).forEach((key) => extraFieldKeys.add(key));
-      }
-    });
-    setAllExtraFields(extraFieldKeys);
-  }, []);
+      const extraFieldKeys = new Set<string>();
+      productsData.forEach((p: Product) => {
+        if (p.extra_fields) {
+          Object.keys(p.extra_fields).forEach((key) => extraFieldKeys.add(key));
+        }
+      });
+      setAllExtraFields(extraFieldKeys);
+    } catch (e) {
+      console.error(e);
+      setError("Failed to fetch products");
+    }
+  }, [page, pageSize]);
 
   useEffect(() => {
-    fetchDocs().catch(() => toast.error("Failed to fetch documents"));
-    fetchProducts().catch(() => toast.error("Failed to fetch products"));
+    fetchDocs();
+    fetchProducts();
   }, [fetchDocs, fetchProducts]);
 
-  // selection helpers
+  useEffect(() => {
+    if (!error && !success) return;
+    const timer = setTimeout(() => {
+      setError(null);
+      setSuccess(null);
+    }, 5000);
+    return () => clearTimeout(timer);
+  }, [error, success]);
+
+  const onDrop = (e: React.DragEvent) => {
+    e.preventDefault();
+    const dropped = Array.from(e.dataTransfer.files).filter(
+      (f) => f.type === "application/pdf"
+    );
+    if (!dropped.length) return;
+
+    setFiles((prev) => {
+      const existing = new Set(prev.map((f) => `${f.name}-${f.size}`));
+      const newOnes = dropped.filter(
+        (f) => !existing.has(`${f.name}-${f.size}`)
+      );
+      return [...prev, ...newOnes];
+    });
+
+    setError(null);
+  };
+
+  const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const selected = Array.from(e.target.files || []);
+    if (!selected.length) return;
+
+    setFiles((prev) => {
+      const existing = new Set(prev.map((f) => `${f.name}-${f.size}`));
+      const newOnes = selected.filter(
+        (f) => !existing.has(`${f.name}-${f.size}`)
+      );
+      return [...prev, ...newOnes];
+    });
+
+    setError(null);
+  };
+
+  const removeFile = (idx: number) => {
+    setFiles((s) => s.filter((_, i) => i !== idx));
+    if (fileInputRef.current) fileInputRef.current.value = "";
+  };
+
+  const clearAllFiles = () => {
+    setFiles([]);
+    if (fileInputRef.current) fileInputRef.current.value = "";
+  };
+
+
+const upload = async () => {
+  if (files.length === 0 || uploadingRef.current) return;
+
+  if (!vendorName.trim()) {
+    setError("Please select a vendor before uploading.");
+    return;
+  }
+
+  uploadingRef.current = true;
+  setLoadingUpload(true);
+  setError(null);
+  setSuccess(null);
+
+  try {
+    const form = new FormData();
+    files.forEach((f) => form.append("files", f));
+    form.append("vendor_name", vendorName);
+
+    const res = await api.post(ENDPOINTS.UPLOAD, form, {
+      headers: { "Content-Type": "multipart/form-data" },
+    });
+
+    setFiles([]);
+    if (fileInputRef.current) fileInputRef.current.value = "";
+
+    const uploaded = res.data.uploaded ?? 0;
+    const skipped = res.data.skipped ?? 0;
+
+    let message = `Uploaded ${uploaded} PDF(s).`;
+    if (skipped > 0) message += ` Skipped ${skipped} duplicate(s).`;
+    setSuccess(message);
+
+    // Show toast for each skipped file with its reason
+    if (Array.isArray(res.data.skipped_files) && res.data.skipped_files.length > 0) {
+      const skippedMessages = res.data.skipped_files
+        .map((file: { filename: string; reason: string }) =>
+          `File "${file.filename}" was skipped: ${file.reason}`
+        )
+        .join("\n");
+      setError(skippedMessages);
+    }
+
+    // refresh
+    await fetchDocs();
+
+    // reset pagination to first page after upload
+    setPage(1);
+    await fetchProducts();
+
+    setSelectedProductIds(new Set());
+  } catch (e: any) {
+    console.error(e);
+    setError(
+      e.response?.data?.error ||
+        "Failed to upload PDFs"
+    );
+  } finally {
+    setLoadingUpload(false);
+    uploadingRef.current = false;
+  }
+};
+
+
   const toggleSelectProduct = (id?: number) => {
     if (!id) return;
     setSelectedProductIds((prev) => {
@@ -110,233 +259,211 @@ export default function Page() {
     setSelectedProductIds(new Set(ids));
   };
 
-  // Selected products (full objects)
   const selectedProducts = useMemo(() => {
-    const idSet = selectedProductIds;
-    return products.filter((p) => p.id && idSet.has(p.id));
+    const ids = selectedProductIds;
+    return products.filter((p) => p.id && ids.has(p.id));
   }, [products, selectedProductIds]);
 
-  // ✅ Rule: Format allowed only if ALL selected have seo_name AND none already formatted
-  const canFormatSelected = useMemo(() => {
-    if (selectedProducts.length === 0) return false;
-
-    const allHaveSeo = selectedProducts.every(
-      (p) => p.seo_name && String(p.seo_name).trim().length > 0
+  const missingSeoForSelected = useMemo(() => {
+    return selectedProducts.filter(
+      (p) => !p.seo_name || String(p.seo_name).trim().length === 0
     );
-
-const noneAlreadyFormatted = selectedProducts.every(
-  (p) => !p.product_name?.includes("|SEO|")
-);
-    return allHaveSeo && noneAlreadyFormatted;
   }, [selectedProducts]);
 
-  const toggleDoc = (id: number) =>
-    setOpenDocIds((prev) => ({ ...prev, [id]: !prev[id] }));
+  const alreadyFormattedSelected = useMemo(() => {
+    return selectedProducts.filter((p) => p.formatted_name_generated);
+  }, [selectedProducts]);
 
-  const onDrop = (e: React.DragEvent) => {
-    e.preventDefault();
-    const dropped = Array.from(e.dataTransfer.files).filter(
-      (f) => f.type === "application/pdf"
-    );
-    if (!dropped.length) return;
-
-    setFiles((prev) => {
-      const existing = new Set(prev.map((f) => `${f.name}-${f.size}`));
-      const newOnes = dropped.filter(
-        (f) => !existing.has(`${f.name}-${f.size}`)
-      );
-      return [...prev, ...newOnes];
-    });
-  };
-
-  const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const selected = Array.from(e.target.files || []);
-    if (!selected.length) return;
-
-    setFiles((prev) => {
-      const existing = new Set(prev.map((f) => `${f.name}-${f.size}`));
-      const newOnes = selected.filter(
-        (f) => !existing.has(`${f.name}-${f.size}`)
-      );
-      return [...prev, ...newOnes];
-    });
-  };
-
-  const removeFile = (idx: number) => {
-    setFiles((s) => s.filter((_, i) => i !== idx));
-    if (fileInputRef.current) fileInputRef.current.value = "";
-  };
-
-  const clearAllFiles = () => {
-    setFiles([]);
-    if (fileInputRef.current) fileInputRef.current.value = "";
-  };
-
-  const upload = async () => {
-    if (files.length === 0 || uploadingRef.current) return;
-
-    uploadingRef.current = true;
-    setLoadingUpload(true);
-
-    const t = toast.loading("Uploading PDFs...");
-
-    try {
-      const form = new FormData();
-      files.forEach((f) => form.append("files", f));
-
-      const res = await api.post("/api/products/upload-pdfs/", form, {
-        headers: { "Content-Type": "multipart/form-data" },
-      });
-
-      const uploaded = res.data.uploaded || res.data.documents?.length || 0;
-      const skipped = res.data.skipped || 0;
-
-      toast.success(
-        `Uploaded ${uploaded} PDF(s)${skipped ? `, skipped ${skipped}` : ""}`,
-        { id: t }
-      );
-
-      setFiles([]);
-      if (fileInputRef.current) fileInputRef.current.value = "";
-
-      await fetchDocs();
-      await fetchProducts();
-
-      setSelectedProductIds(new Set());
-      setDocsCollapsed(true);
-    } catch (e: any) {
-      toast.error(e.response?.data?.error || "Upload failed", { id: t });
-    } finally {
-      setLoadingUpload(false);
-      uploadingRef.current = false;
-    }
-  };
-
-  // metadata generation (optional)
   const generateMetadataForSelected = async () => {
     const ids = Array.from(selectedProductIds);
-    if (ids.length === 0) return toast.error("Select at least 1 product");
+    if (ids.length === 0) {
+      setError("Select at least 1 product first.");
+      return;
+    }
 
     setLoadingMeta(true);
-    const t = toast.loading("Generating metadata...");
+    setError(null);
+    setSuccess(null);
 
     try {
-      const res = await api.post("/api/products/generate-metadata/", {
+      const res = await api.post(ENDPOINTS.GENERATE_METADATA, {
         product_ids: ids,
       });
 
       const updated = res.data.updated ?? 0;
       const failed = res.data.failed?.length ?? 0;
 
-      toast.success(
-        `Metadata updated: ${updated}${failed ? `, failed ${failed}` : ""}`,
-        { id: t }
+      setSuccess(
+        `Metadata generated: ${updated} updated${
+          failed ? `, ${failed} failed` : ""
+        }`
       );
 
       await fetchProducts();
     } catch (e: any) {
-      toast.error(e.response?.data?.error || "Metadata generation failed", {
-        id: t,
-      });
+      console.error(e);
+      setError(e.response?.data?.error || "Failed to generate metadata");
     } finally {
       setLoadingMeta(false);
     }
   };
 
-  // ✅ Online SEO name -> updates seo_name
-  const generateSeoNamesOnline = async () => {
-    const ids = Array.from(selectedProductIds);
-    if (ids.length === 0) return toast.error("Select at least 1 product");
-
-    setLoadingSeoOnline(true);
-    const t = toast.loading("Generating SEO names (online)...");
+  const generateMetadataForDocument = async (docId: number) => {
+    setLoadingMeta(true);
+    setError(null);
+    setSuccess(null);
 
     try {
-      const res = await api.post("/api/products/generate-online-seo-name/", {
+      const res = await api.post(ENDPOINTS.GENERATE_METADATA, {
+        document_id: docId,
+      });
+
+      const updated = res.data.updated ?? 0;
+      const failed = res.data.failed?.length ?? 0;
+
+      setSuccess(
+        `Metadata generated for document: ${updated} updated${
+          failed ? `, ${failed} failed` : ""
+        }`
+      );
+      await fetchProducts();
+    } catch (e: any) {
+      console.error(e);
+      setError(
+        e.response?.data?.error ||
+          "Failed to generate metadata for this document"
+      );
+    } finally {
+      setLoadingMeta(false);
+    }
+  };
+
+  const generateOnlineSeoNameForSelected = async () => {
+    const ids = Array.from(selectedProductIds);
+    if (ids.length === 0) {
+      setError("Select at least 1 product first.");
+      return;
+    }
+
+    setLoadingSeo(true);
+    setError(null);
+    setSuccess(null);
+
+    try {
+      const res = await api.post(ENDPOINTS.GENERATE_ONLINE_SEO_NAME, {
         product_ids: ids,
       });
 
       const updated = res.data.updated ?? 0;
       const failed = res.data.failed?.length ?? 0;
 
-      toast.success(
-        `SEO names updated: ${updated}${failed ? `, failed ${failed}` : ""}`,
-        { id: t }
+      setSuccess(
+        `SEO names generated: ${updated} updated${
+          failed ? `, ${failed} failed` : ""
+        }`
       );
 
       await fetchProducts();
     } catch (e: any) {
-      toast.error(e.response?.data?.error || "SEO generation failed", { id: t });
+      console.error(e);
+      setError(e.response?.data?.error || "Failed to generate SEO names");
     } finally {
-      setLoadingSeoOnline(false);
+      setLoadingSeo(false);
     }
   };
 
-  // ✅ Format -> updates product_name (backend enforces: seo_name required + only once)
-  const generateFormattedProductName = async () => {
+  const generateFormattedNameForSelected = async () => {
     const ids = Array.from(selectedProductIds);
-    if (ids.length === 0) return toast.error("Select at least 1 product");
-
-    // Frontend guard (backend also guards)
-    if (!canFormatSelected) {
-      return toast.error(
-        "Generate SEO Name first (and ensure names are not already formatted)."
-      );
+    if (ids.length === 0) {
+      setError("Select at least 1 product first.");
+      return;
     }
 
-    setLoadingFormatName(true);
-    const t = toast.loading("Updating product names (format)...");
+    // must have seo_name first
+    if (missingSeoForSelected.length > 0) {
+      setError(
+        `SEO name missing for ${missingSeoForSelected.length} selected product(s). Generate SEO name first.`
+      );
+      return;
+    }
+
+    // must only be generated once
+    if (alreadyFormattedSelected.length > 0) {
+      setError(
+        `Product name already generated once for ${alreadyFormattedSelected.length} selected product(s).`
+      );
+      return;
+    }
+
+    setLoadingName(true);
+    setError(null);
+    setSuccess(null);
 
     try {
-      const res = await api.post("/api/products/generate-formatted-name/", {
+      const res = await api.post(ENDPOINTS.GENERATE_FORMATTED_NAME, {
         product_ids: ids,
       });
 
       const updated = res.data.updated ?? 0;
-      const skipped = res.data.skipped ?? [];
+      const failed = res.data.failed?.length ?? 0;
 
-      if (skipped.length) {
-        toast(
-          `Updated: ${updated}. Skipped: ${skipped.length} (missing seo_name or already formatted).`,
-          { id: t, icon: "⚠️" }
-        );
-      } else {
-        toast.success(`Product names updated: ${updated}`, { id: t });
-      }
+      setSuccess(
+        `Product names formatted: ${updated} updated${
+          failed ? `, ${failed} failed` : ""
+        }`
+      );
 
       await fetchProducts();
     } catch (e: any) {
-      toast.error(e.response?.data?.error || "Format name update failed", {
-        id: t,
-      });
+      console.error(e);
+      setError(e.response?.data?.error || "Failed to format product names");
     } finally {
-      setLoadingFormatName(false);
+      setLoadingName(false);
     }
   };
 
-  // copy helpers
   const copyMetadata = async (p: Product) => {
     try {
       const text = JSON.stringify(p.metadata || {}, null, 2);
       await navigator.clipboard.writeText(text);
-      toast.success("Metadata copied");
-    } catch {
-      toast.error("Copy failed");
-    }
-  };
-
-  const copySeoName = async (p: Product) => {
-    try {
-      await navigator.clipboard.writeText(p.seo_name || "");
-      toast.success("SEO name copied");
-    } catch {
-      toast.error("Copy failed");
+      setSuccess("Metadata copied to clipboard");
+    } catch (e) {
+      console.error(e);
+      setError("Failed to copy");
     }
   };
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-slate-900 via-zinc-900 to-black p-6">
       <div className="w-full max-w-7xl mx-auto">
+        {/* Toasts */}
+        {(error || success) && (
+          <div className="fixed top-4 right-4 z-50 max-w-md">
+            {error && (
+              <div className="bg-red-500/90 backdrop-blur-sm text-white px-4 py-3 rounded-lg shadow-lg flex items-center gap-3 mb-2">
+                <span className="flex-1">{error}</span>
+                <button
+                  onClick={() => setError(null)}
+                  className="ml-auto text-white/90 hover:text-white"
+                >
+                  ×
+                </button>
+              </div>
+            )}
+            {success && (
+              <div className="bg-green-500/90 backdrop-blur-sm text-white px-4 py-3 rounded-lg shadow-lg flex items-center gap-3">
+                <span className="flex-1">{success}</span>
+                <button
+                  onClick={() => setSuccess(null)}
+                  className="ml-auto text-white/90 hover:text-white"
+                >
+                  ×
+                </button>
+              </div>
+            )}
+          </div>
+        )}
+
         {/* Header */}
         <div className="bg-white/5 border border-white/10 rounded-2xl shadow-2xl p-6 backdrop-blur-sm mb-6">
           <header className="flex flex-col md:flex-row items-start md:items-center justify-between gap-4">
@@ -345,13 +472,13 @@ const noneAlreadyFormatted = selectedProducts.every(
                 AI Inventory Manager
               </h1>
               <p className="text-sm text-slate-400 mt-1">
-                Upload PDFs, extract products, generate SEO + metadata
+                Upload PDF price lists, extract products, generate SEO metadata
               </p>
             </div>
 
             <div className="flex flex-wrap gap-2">
               <Link
-                href={`${API_BASE}/api/products/export-csv/`}
+                href={ENDPOINTS.EXPORT_CSV}
                 target="_blank"
                 className="inline-flex items-center gap-2 px-5 py-2.5 rounded-lg bg-white/10 text-white font-semibold hover:bg-white/20 transition shadow-lg"
               >
@@ -363,9 +490,23 @@ const noneAlreadyFormatted = selectedProducts.every(
 
         {/* Upload */}
         <div className="bg-white/5 border border-white/10 rounded-2xl shadow-2xl p-6 backdrop-blur-sm mb-6">
-          <h2 className="text-xl font-bold text-slate-200 mb-4">
-            Upload Documents
-          </h2>
+          <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-3 mb-4">
+            <h2 className="text-xl font-bold text-slate-200">Upload Documents</h2>
+
+            <div className="flex items-center gap-2">
+              <span className="text-sm text-slate-300">Vendor:</span>
+              <select
+                value={vendorName}
+                onChange={(e) => setVendorName(e.target.value)}
+                className="bg-black/30 border border-white/10 rounded-lg px-3 py-2 text-slate-200"
+              >
+                <option value="">Select vendor</option>
+                <option value="iTechSmart">iTechSmart</option>
+                <option value="VendorX">VendorX</option>
+                <option value="VendorY">VendorY</option>
+              </select>
+            </div>
+          </div>
 
           <section
             onDragOver={(e) => e.preventDefault()}
@@ -393,7 +534,7 @@ const noneAlreadyFormatted = selectedProducts.every(
               </label>
 
               <p className="text-xs text-slate-500 mt-4">
-                Supported: PDF • Larger PDFs may take longer to process
+                Supported: PDF • No PDFs are stored on server
               </p>
             </div>
           </section>
@@ -419,9 +560,7 @@ const noneAlreadyFormatted = selectedProducts.every(
                     className="flex items-center justify-between bg-white/6 px-4 py-3 rounded-lg"
                   >
                     <div className="flex-1 min-w-0">
-                      <div className="text-sm text-slate-200 truncate">
-                        {f.name}
-                      </div>
+                      <div className="text-sm text-slate-200 truncate">{f.name}</div>
                       <div className="text-xs text-slate-400">
                         {(f.size / 1024).toFixed(2)} KB
                       </div>
@@ -454,81 +593,67 @@ const noneAlreadyFormatted = selectedProducts.every(
           )}
         </div>
 
-        {/* Documents - Collapsible (default collapsed) */}
+        {/* Collapsible Documents */}
         <div className="bg-white/5 border border-white/10 rounded-2xl shadow-2xl p-6 backdrop-blur-sm mb-6">
-          <button
-            onClick={() => setDocsCollapsed((v) => !v)}
-            className="w-full flex items-center justify-between"
-          >
+          <div className="flex items-center justify-between gap-3">
             <h2 className="text-xl font-bold text-slate-200">
               Uploaded Documents ({docs.length})
             </h2>
-            <span className="text-slate-400 text-sm">
-              {docsCollapsed ? "Show ▾" : "Hide ▴"}
-            </span>
-          </button>
 
-          {!docsCollapsed && (
-            <>
+            <button
+              onClick={() => setOpenDocs((s) => !s)}
+              className="px-3 py-2 rounded-lg bg-white/10 text-white hover:bg-white/20 transition"
+            >
+              {openDocs ? "Collapse" : "Expand"}
+            </button>
+          </div>
+
+          {openDocs && (
+            <div className="mt-4">
               {docs.length === 0 ? (
-                <div className="text-center py-12 text-slate-400">
+                <div className="text-center py-10 text-slate-400">
                   No documents uploaded yet
                 </div>
               ) : (
-                <div className="mt-4 grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
                   {docs.map((d) => (
                     <article
                       key={d.id}
                       className="p-5 rounded-xl bg-gradient-to-br from-white/5 to-white/2 border border-white/10 hover:border-cyan-500/50 transition"
                     >
-                      <div className="flex items-start justify-between gap-3 mb-3">
-                        <div className="flex-1 min-w-0">
-                          <div className="text-sm text-cyan-200 font-semibold truncate mb-1">
-                            {d.filename}
-                          </div>
-                          <div className="text-xs text-slate-400">
-                            {d.total_rows} rows •{" "}
-                            {new Date(d.uploaded_at).toLocaleDateString()}
-                          </div>
-                          {d.extra_fields && d.extra_fields.length > 0 && (
-                            <div className="mt-2 flex flex-wrap gap-1">
-                              {d.extra_fields.slice(0, 6).map((field, idx) => (
-                                <span
-                                  key={idx}
-                                  className="text-xs bg-cyan-500/20 text-cyan-300 px-2 py-0.5 rounded"
-                                >
-                                  {field}
-                                </span>
-                              ))}
-                              {d.extra_fields.length > 6 && (
-                                <span className="text-xs text-slate-400">
-                                  +{d.extra_fields.length - 6} more
-                                </span>
-                              )}
-                            </div>
-                          )}
-                        </div>
-
-                        <button
-                          onClick={() => toggleDoc(d.id)}
-                          className="px-3 py-1.5 rounded-md bg-white/10 text-xs text-white hover:bg-white/20 transition"
-                        >
-                          {openDocIds[d.id] ? "Hide" : "View"}
-                        </button>
+                      <div className="text-sm text-cyan-200 font-semibold truncate mb-1">
+                        {d.filename}
+                      </div>
+                      <div className="text-xs text-slate-400">
+                        {d.total_rows} rows •{" "}
+                        {new Date(d.uploaded_at).toLocaleDateString()}
                       </div>
 
-                      {openDocIds[d.id] && (
-                        <div className="mt-4 pt-4 border-t border-white/10">
-                          <pre className="text-xs bg-black/30 p-3 rounded text-slate-300 overflow-x-auto max-h-64">
-                            {JSON.stringify(d, null, 2)}
-                          </pre>
-                        </div>
-                      )}
+                      <div className="text-xs text-slate-400 mt-2">
+                        Vendor:{" "}
+                        <span className="text-slate-200">
+                          {d.vendor_name || "—"}
+                        </span>
+                      </div>
+
+                      <div className="mt-3 flex gap-2">
+                        <button
+                          onClick={() => generateMetadataForDocument(d.id)}
+                          disabled={loadingMeta}
+                          className={classNames(
+                            "px-3 py-1.5 rounded-md text-xs transition",
+                            "bg-cyan-500/20 text-cyan-200 hover:bg-cyan-500/30",
+                            loadingMeta && "opacity-50 cursor-not-allowed"
+                          )}
+                        >
+                          {loadingMeta ? "Working..." : "Generate Metadata"}
+                        </button>
+                      </div>
                     </article>
                   ))}
                 </div>
               )}
-            </>
+            </div>
           )}
         </div>
 
@@ -542,53 +667,46 @@ const noneAlreadyFormatted = selectedProducts.every(
             <div className="flex flex-wrap gap-2 items-center">
               <div className="text-sm text-slate-400">
                 Selected:{" "}
-                <span className="text-slate-200 font-semibold">
-                  {selectedProductIds.size}
-                </span>
+                <span className="text-slate-200 font-semibold">{selectedCount}</span>
               </div>
 
               <button
-                onClick={generateMetadataForSelected}
-                disabled={loadingMeta || selectedProductIds.size === 0}
-                className={classNames(
-                  "px-4 py-2 rounded-lg font-semibold transition",
-                  "bg-white/10 text-white hover:bg-white/20",
-                  (loadingMeta || selectedProductIds.size === 0) &&
-                    "opacity-50 cursor-not-allowed"
-                )}
-              >
-                {loadingMeta ? "Generating..." : "Generate Metadata"}
-              </button>
-
-              <button
-                onClick={generateSeoNamesOnline}
-                disabled={loadingSeoOnline || selectedProductIds.size === 0}
-                className={classNames(
-                  "px-4 py-2 rounded-lg font-semibold transition",
-                  "bg-cyan-500 text-black hover:brightness-110",
-                  (loadingSeoOnline || selectedProductIds.size === 0) &&
-                    "opacity-50 cursor-not-allowed"
-                )}
-              >
-                {loadingSeoOnline ? "Working..." : "Generate SEO Name (Online)"}
-              </button>
-
-              <button
-                onClick={generateFormattedProductName}
-                disabled={loadingFormatName || !canFormatSelected}
+                onClick={generateOnlineSeoNameForSelected}
+                disabled={loadingSeo || selectedCount === 0}
                 className={classNames(
                   "px-4 py-2 rounded-lg font-semibold transition",
                   "bg-purple-500 text-white hover:brightness-110",
-                  (loadingFormatName || !canFormatSelected) &&
+                  (loadingSeo || selectedCount === 0) &&
                     "opacity-50 cursor-not-allowed"
                 )}
-                title={
-                  !canFormatSelected
-                    ? "Generate SEO Name first, and ensure product names are not already formatted."
-                    : ""
-                }
               >
-                {loadingFormatName ? "Working..." : "Format Product Name"}
+                {loadingSeo ? "Generating SEO..." : "Generate SEO Name (Selected)"}
+              </button>
+
+              <button
+                onClick={generateFormattedNameForSelected}
+                disabled={loadingName || selectedCount === 0}
+                className={classNames(
+                  "px-4 py-2 rounded-lg font-semibold transition",
+                  "bg-amber-400 text-black hover:brightness-110",
+                  (loadingName || selectedCount === 0) &&
+                    "opacity-50 cursor-not-allowed"
+                )}
+              >
+                {loadingName ? "Formatting..." : "Generate Product Name (Selected)"}
+              </button>
+
+              <button
+                onClick={generateMetadataForSelected}
+                disabled={loadingMeta || selectedCount === 0}
+                className={classNames(
+                  "px-4 py-2 rounded-lg font-semibold transition",
+                  "bg-cyan-500 text-black hover:brightness-110",
+                  (loadingMeta || selectedCount === 0) &&
+                    "opacity-50 cursor-not-allowed"
+                )}
+              >
+                {loadingMeta ? "Generating..." : "Generate Metadata (Selected)"}
               </button>
 
               <button
@@ -597,12 +715,11 @@ const noneAlreadyFormatted = selectedProducts.every(
                     ? clearSelection()
                     : selectAll()
                 }
-                disabled={anyLoading || products.length === 0}
+                disabled={products.length === 0}
                 className={classNames(
                   "px-4 py-2 rounded-lg transition",
                   "bg-white/10 text-white hover:bg-white/20",
-                  (anyLoading || products.length === 0) &&
-                    "opacity-50 cursor-not-allowed"
+                  products.length === 0 && "opacity-50 cursor-not-allowed"
                 )}
               >
                 {selectedProductIds.size === allSelectableCount
@@ -612,12 +729,11 @@ const noneAlreadyFormatted = selectedProducts.every(
 
               <button
                 onClick={clearSelection}
-                disabled={anyLoading || selectedProductIds.size === 0}
+                disabled={selectedCount === 0}
                 className={classNames(
                   "px-4 py-2 rounded-lg transition",
                   "bg-white/10 text-white hover:bg-white/20",
-                  (anyLoading || selectedProductIds.size === 0) &&
-                    "opacity-50 cursor-not-allowed"
+                  selectedCount === 0 && "opacity-50 cursor-not-allowed"
                 )}
               >
                 Clear
@@ -649,7 +765,6 @@ const noneAlreadyFormatted = selectedProducts.every(
                   <th className="px-4 py-3 font-semibold">Type</th>
                   <th className="px-4 py-3 font-semibold">Retail</th>
                   <th className="px-4 py-3 font-semibold">Sale</th>
-                  <th className="px-4 py-3 font-semibold">Model</th>
                   <th className="px-4 py-3 font-semibold">Color</th>
                   <th className="px-4 py-3 font-semibold">Variants</th>
                   <th className="px-4 py-3 font-semibold">Vendor</th>
@@ -670,7 +785,7 @@ const noneAlreadyFormatted = selectedProducts.every(
                 {products.length === 0 ? (
                   <tr>
                     <td
-                      colSpan={13 + allExtraFields.size}
+                      colSpan={12 + allExtraFields.size}
                       className="px-4 py-8 text-center text-slate-400"
                     >
                       No products available
@@ -688,41 +803,25 @@ const noneAlreadyFormatted = selectedProducts.every(
                       </td>
 
                       <td className="px-4 py-3 text-slate-300">{p.document}</td>
+
                       <td className="px-4 py-3 text-white font-medium">
                         {p.product_name}
                       </td>
 
-                      <td className="px-4 py-3 text-cyan-200">
-                        {p.seo_name && p.seo_name.trim() ? (
-                          <div className="flex items-center gap-2">
-                            <span className="truncate max-w-[260px]">
-                              {p.seo_name}
-                            </span>
-                            <button
-                              onClick={() => copySeoName(p)}
-                              className="text-xs px-2 py-1 rounded bg-white/10 hover:bg-white/20 transition"
-                            >
-                              Copy
-                            </button>
-                          </div>
+                      <td className="px-4 py-3 text-slate-300">
+                        {p.seo_name ? (
+                          <span className="text-purple-300">{p.seo_name}</span>
                         ) : (
                           <span className="text-slate-500 text-xs">—</span>
                         )}
                       </td>
 
                       <td className="px-4 py-3 text-slate-300">{p.brand_name}</td>
-                      <td className="px-4 py-3 text-slate-400">
-                        {p.product_type}
-                      </td>
-                      <td className="px-4 py-3 text-green-400">
-                        ${p.retail_price}
-                      </td>
-                      <td className="px-4 py-3 text-cyan-400">
-                        ${p.sale_price}
-                      </td>
-                      <td className="px-4 py-3 text-slate-400">
-                        {p.model_number}
-                      </td>
+                      <td className="px-4 py-3 text-slate-400">{p.product_type}</td>
+
+                      <td className="px-4 py-3 text-green-400">${p.retail_price}</td>
+                      <td className="px-4 py-3 text-cyan-400">${p.sale_price}</td>
+
                       <td className="px-4 py-3">
                         {p.color ? (
                           <span className="inline-block px-2 py-1 rounded text-xs bg-white/10">
@@ -732,10 +831,9 @@ const noneAlreadyFormatted = selectedProducts.every(
                           ""
                         )}
                       </td>
+
                       <td className="px-4 py-3 text-slate-400">{p.variants}</td>
-                      <td className="px-4 py-3 text-slate-300">
-                        {p.vendor_name}
-                      </td>
+                      <td className="px-4 py-3 text-slate-300">{p.vendor_name}</td>
 
                       <td className="px-4 py-3 text-slate-300">
                         {p.metadata && Object.keys(p.metadata).length > 0 ? (
@@ -773,9 +871,48 @@ const noneAlreadyFormatted = selectedProducts.every(
             </table>
           </div>
 
+          {/* ✅ Pagination */}
+          <div className="flex items-center justify-between mt-4">
+            <button
+              onClick={() => setPage((p) => Math.max(1, p - 1))}
+              disabled={page <= 1}
+              className="px-4 py-2 rounded bg-white/10 text-white disabled:opacity-40"
+            >
+              Prev
+            </button>
+
+            <div className="text-sm text-slate-300 flex items-center gap-3">
+              <span>
+                Page <span className="text-white font-semibold">{page}</span> /{" "}
+                {totalPages}
+              </span>
+
+              <select
+                value={pageSize}
+                onChange={(e) => {
+                  setPage(1);
+                  setPageSize(Number(e.target.value));
+                }}
+                className="bg-black/30 border border-white/10 rounded-lg px-3 py-2 text-slate-200 text-xs"
+              >
+                <option value={10}>10</option>
+                <option value={20}>20</option>
+                <option value={50}>50</option>
+                <option value={100}>100</option>
+              </select>
+            </div>
+
+            <button
+              onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
+              disabled={page >= totalPages}
+              className="px-4 py-2 rounded bg-white/10 text-white disabled:opacity-40"
+            >
+              Next
+            </button>
+          </div>
+
           <p className="text-xs text-slate-500 mt-3">
-            ✅ “Format Product Name” is enabled only when all selected products
-            have <b>seo_name</b> and are not already formatted.
+            Flow: Select products → Generate SEO Name → Generate Product Name (once) → Generate Metadata.
           </p>
         </div>
       </div>

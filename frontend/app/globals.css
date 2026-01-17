@@ -4,3 +4,8 @@
 
 /* optional: your custom styles */
 body { @apply bg-slate-900; }
+
+body {
+  font-family: sans-serif;
+  padding: 20px;
+}

@@ -1,136 +1,211 @@
 import re
 import pandas as pd
 import pdfplumber
-from typing import Tuple, List, Dict, Any
 
 
-KEYWORDS = ["model", "type", "rp", "mrp", "color"]
-
-
-def _clean_cell(v: Any) -> str:
-    if v is None:
+def _clean_cell(x):
+    if x is None:
         return ""
-    s = str(v)
-    s = s.replace("\u00a0", " ")  # nbsp
-    s = s.replace("\n", " ")
+    s = str(x)
     s = re.sub(r"\s+", " ", s).strip()
     return s
 
 
-def _normalize_header(h: str) -> str:
-    h = _clean_cell(h)
-    h = h.replace("S/L", "SL").replace("S\\L", "SL")
-    # common spelling inconsistency found in PDFs
-    h = h.replace("Avaiable", "Available")
-    return h
+def _norm(s: str) -> str:
+    s = _clean_cell(s).upper()
+    s = s.replace("S/L", "SL").replace("S\\L", "SL")
+    s = s.replace("MODEL NO.", "MODEL NO")
+    s = s.replace("MODEL#", "MODEL")
+    return s
 
 
-def _header_score(cells: List[str]) -> int:
-    text = " ".join([c.lower() for c in cells if c]).lower()
-    return sum(1 for k in KEYWORDS if k in text)
+def _is_footer_row(row) -> bool:
+    joined = " ".join(_clean_cell(c).lower() for c in row)
+    return ("official distributor" in joined) or ("price list" in joined)
 
 
-def _is_header_row(cells: List[str]) -> bool:
-    # must contain at least 3 of the keyword signals
-    if _header_score(cells) < 3:
+def _extract_tables(page):
+    """
+    Try multiple strategies because different PDFs behave differently.
+    """
+    candidates = []
+
+    strategies = [
+        {
+            "vertical_strategy": "lines",
+            "horizontal_strategy": "lines",
+            "intersection_tolerance": 5,
+            "snap_tolerance": 3,
+            "join_tolerance": 3,
+            "edge_min_length": 10,
+            "min_words_vertical": 1,
+            "min_words_horizontal": 1,
+            "text_tolerance": 2,
+        },
+        {
+            "vertical_strategy": "text",
+            "horizontal_strategy": "text",
+            "text_tolerance": 2,
+            "intersection_tolerance": 5,
+        },
+        # extra fallback: text + bigger tolerance
+        {
+            "vertical_strategy": "text",
+            "horizontal_strategy": "text",
+            "text_tolerance": 6,
+            "intersection_tolerance": 8,
+        },
+    ]
+
+    for st in strategies:
+        try:
+            t = page.extract_tables(table_settings=st) or []
+            if t:
+                candidates.extend(t)
+        except Exception:
+            pass
+
+    return candidates
+
+
+def _find_header_like_row(table_rows):
+    """
+    We don’t rely on perfect header cells because SoundPEATS header is split.
+    We detect a header-like row by presence of TYPE/RP/MRP/COLOR (or close variants).
+    """
+    best_i = None
+    best_score = -1
+
+    for i, r in enumerate(table_rows[:15]):  # header usually near top
+        row = [_norm(c) for c in r]
+        joined = " ".join(row)
+
+        score = 0
+        for key in ["TYPE", "RP", "MRP", "COLOR", "COLOUR", "MODEL", "MOD", "EL"]:
+            if key in joined:
+                score += 1
+
+        # must have at least TYPE + RP/MRP in some form
+        if score > best_score and (("TYPE" in joined) and ("RP" in joined or "MRP" in joined)):
+            best_score = score
+            best_i = i
+
+    return best_i
+
+
+def _index_of(col_tokens, *needles):
+    """
+    Find column index by matching cell tokens.
+    """
+    for n in needles:
+        n = _norm(n)
+        for i, c in enumerate(col_tokens):
+            if c == n or n in c:
+                return i
+    return None
+
+
+def _looks_like_data_row(model, ptype, rp, mrp) -> bool:
+    # must have a model-ish string and at least one price
+    if not model or len(model) < 2:
+        return False
+    if not ptype:
         return False
 
-    # additionally must include a "MODEL" header explicitly (common in your PDFs)
-    return any("model" in c.lower() for c in cells if c)
+    # avoid obvious junk headers repeating
+    bad = (model.upper() in ["MODEL", "MOD", "EL", "MODEL PHOTOS"])
+    if bad:
+        return False
+
+    # price sanity: at least one numeric
+    def is_num(x):
+        x = _clean_cell(x).replace(",", "")
+        return bool(re.fullmatch(r"\d+(\.\d+)?", x))
+
+    return is_num(rp) or is_num(mrp)
 
 
-def _looks_like_brand_banner(cells: List[str]) -> bool:
-    # Many pages start with "QCY BANGLADESH" or "HiFuture Bangladesh"
-    joined = " ".join(cells).lower()
-    return ("bangladesh" in joined and "distributor" in joined) or (
-        len(cells) <= 2 and "bangladesh" in joined
-    )
-
-
-def parse_pdf(pdf_file) -> Tuple[pd.DataFrame, List[str]]:
+def parse_pdf(pdf_file) -> tuple[pd.DataFrame, list[str]]:
     """
-    Robust PDF table parser:
-    - Uses pdfplumber.extract_tables() instead of extract_text()
-    - Detects header row inside extracted tables
-    - Supports multiple header sections across pages
-    - Returns:
-        df: DataFrame with extracted rows
-        all_columns: list of union columns found
+    Returns:
+      df: rows extracted across all pages
+      all_columns: union of all columns found
     """
+    all_rows = []
+    all_cols = set()
 
-    rows: List[Dict[str, str]] = []
-    all_columns = set()
-
+    pdf_file.seek(0)
     with pdfplumber.open(pdf_file) as pdf:
-        current_headers: List[str] = []
-
         for page in pdf.pages:
-            tables = page.extract_tables() or []
+            tables = _extract_tables(page)
             if not tables:
                 continue
 
             for table in tables:
-                # Table is a list of rows; each row is list of cells
-                for raw_row in table:
-                    cleaned_row = [_clean_cell(c) for c in (raw_row or [])]
+                if not table or len(table) < 2:
+                    continue
 
-                    # skip empty rows
-                    if not any(cleaned_row):
+                cleaned = [[_clean_cell(c) for c in r] for r in table]
+                header_idx = _find_header_like_row(cleaned)
+
+                if header_idx is None:
+                    continue
+
+                header_row = cleaned[header_idx]
+                header_tokens = [_norm(c) for c in header_row]
+
+                # Find important columns by position
+                type_idx = _index_of(header_tokens, "TYPE")
+                rp_idx = _index_of(header_tokens, "RP", "R.P", "R/P")
+                mrp_idx = _index_of(header_tokens, "MRP", "M.R.P", "M/RP")
+                color_idx = _index_of(header_tokens, "COLOR", "COLOUR")
+
+                if type_idx is None or (rp_idx is None and mrp_idx is None):
+                    continue
+
+                # Build our canonical schema
+                canonical_cols = ["MODEL", "TYPE", "RP", "MRP", "COLOR"]
+                all_cols.update(canonical_cols)
+
+                data_rows = cleaned[header_idx + 1 :]
+
+                for r in data_rows:
+                    if not any(_clean_cell(x) for x in r):
+                        continue
+                    if _is_footer_row(r):
+                        break
+
+                    # pad row length
+                    if len(r) < len(header_tokens):
+                        r = r + [""] * (len(header_tokens) - len(r))
+                    elif len(r) > len(header_tokens):
+                        r = r[: len(header_tokens)]
+
+                    # Extract by index
+                    ptype = _clean_cell(r[type_idx]) if type_idx is not None else ""
+                    rp = _clean_cell(r[rp_idx]) if rp_idx is not None else ""
+                    mrp = _clean_cell(r[mrp_idx]) if mrp_idx is not None else ""
+                    color = _clean_cell(r[color_idx]) if color_idx is not None else ""
+
+                    # Model often spans multiple cells BEFORE color/type in SoundPEATS table
+                    left_end = color_idx if color_idx is not None else type_idx
+                    if left_end is None:
+                        left_end = type_idx
+
+                    # usually first col is SL, model starts from col 1
+                    model_parts = r[1:left_end] if left_end and left_end > 1 else r[:left_end]
+                    model = _clean_cell(" ".join([x for x in model_parts if _clean_cell(x)]))
+
+                    if not _looks_like_data_row(model, ptype, rp, mrp):
                         continue
 
-                    # skip brand/banner lines that appear inside tables
-                    if _looks_like_brand_banner(cleaned_row):
-                        continue
+                    all_rows.append({
+                        "MODEL": model,
+                        "TYPE": ptype,
+                        "RP": rp,
+                        "MRP": mrp,
+                        "COLOR": color,
+                    })
 
-                    # detect header row
-                    if _is_header_row(cleaned_row):
-                        headers = [_normalize_header(h) for h in cleaned_row]
-                        # remove empty headers and keep indices
-                        idx_keep = [i for i, h in enumerate(headers) if h]
-                        headers = [headers[i] for i in idx_keep]
-
-                        current_headers = headers
-                        all_columns.update(current_headers)
-                        continue
-
-                    # if no header found yet, can't map data
-                    if not current_headers:
-                        continue
-
-                    # Align row length to header length:
-                    # 1) drop cells where header was empty originally (handled by idx_keep logic above)
-                    # But in case some tables produce extra leading empty cells, trim/pad.
-
-                    data_cells = cleaned_row
-
-                    # If more cells than headers: merge extras into last column
-                    if len(data_cells) > len(current_headers):
-                        data_cells = data_cells[: len(current_headers) - 1] + [
-                            " ".join(data_cells[len(current_headers) - 1 :]).strip()
-                        ]
-
-                    # If fewer cells than headers: pad with empty
-                    if len(data_cells) < len(current_headers):
-                        data_cells = data_cells + [""] * (
-                            len(current_headers) - len(data_cells)
-                        )
-
-                    row_dict = dict(zip(current_headers, data_cells))
-
-                    # Must have MODEL-like value in this row (avoid footers / junk)
-                    # header could be "MODEL" or "Model"
-                    model_key = None
-                    for k in row_dict.keys():
-                        if k.lower() == "model":
-                            model_key = k
-                            break
-                    if model_key and not row_dict.get(model_key, "").strip():
-                        continue
-
-                    rows.append(row_dict)
-
-    df = pd.DataFrame(rows)
-    if not df.empty:
-        df.columns = [_normalize_header(c) for c in df.columns]
-
-    return df, sorted(list(all_columns))
+    df = pd.DataFrame(all_rows)
+    return df, sorted(list(all_cols))

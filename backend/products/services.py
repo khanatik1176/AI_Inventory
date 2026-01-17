@@ -57,7 +57,7 @@ Product:
         }
 
 
-def fetch_titles(query: str, limit: int = 15) -> list[str]:
+def fetch_seo_suggestions(query: str, limit: int = 15) -> list[str]:
     titles = []
     with DDGS() as ddgs:
         for r in ddgs.text(query, max_results=limit):
@@ -69,7 +69,7 @@ def fetch_titles(query: str, limit: int = 15) -> list[str]:
 
 
 
-def build_seo_name(product: dict, titles: list[str]) -> str:
+def create_seo_name(product: dict, titles: list[str]) -> str:
     prompt = f"""
 Generate ONE SEO-friendly product title (plain text only).
 Use product data + search titles for inspiration.
