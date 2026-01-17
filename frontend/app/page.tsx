@@ -63,6 +63,7 @@ export default function Page() {
   const [loadingMeta, setLoadingMeta] = useState(false);
   const [loadingSeo, setLoadingSeo] = useState(false);
   const [loadingName, setLoadingName] = useState(false);
+  const [loadingProducts, setLoadingProducts] = useState(false);
 
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
@@ -100,6 +101,7 @@ export default function Page() {
   }, []);
 
   const fetchProducts = useCallback(async () => {
+    setLoadingProducts(true);
     try {
       const res = await api.get(
         `${ENDPOINTS.LIST}?page=${page}&page_size=${pageSize}`
@@ -118,6 +120,8 @@ export default function Page() {
     } catch (e) {
       console.error(e);
       setError("Failed to fetch products");
+    } finally {
+      setLoadingProducts(false);
     }
   }, [page, pageSize]);
 
@@ -178,69 +182,68 @@ export default function Page() {
     if (fileInputRef.current) fileInputRef.current.value = "";
   };
 
+  const upload = async () => {
+    if (files.length === 0 || uploadingRef.current) return;
 
-const upload = async () => {
-  if (files.length === 0 || uploadingRef.current) return;
-
-  if (!vendorName.trim()) {
-    setError("Please select a vendor before uploading.");
-    return;
-  }
-
-  uploadingRef.current = true;
-  setLoadingUpload(true);
-  setError(null);
-  setSuccess(null);
-
-  try {
-    const form = new FormData();
-    files.forEach((f) => form.append("files", f));
-    form.append("vendor_name", vendorName);
-
-    const res = await api.post(ENDPOINTS.UPLOAD, form, {
-      headers: { "Content-Type": "multipart/form-data" },
-    });
-
-    setFiles([]);
-    if (fileInputRef.current) fileInputRef.current.value = "";
-
-    const uploaded = res.data.uploaded ?? 0;
-    const skipped = res.data.skipped ?? 0;
-
-    let message = `Uploaded ${uploaded} PDF(s).`;
-    if (skipped > 0) message += ` Skipped ${skipped} duplicate(s).`;
-    setSuccess(message);
-
-    // Show toast for each skipped file with its reason
-    if (Array.isArray(res.data.skipped_files) && res.data.skipped_files.length > 0) {
-      const skippedMessages = res.data.skipped_files
-        .map((file: { filename: string; reason: string }) =>
-          `File "${file.filename}" was skipped: ${file.reason}`
-        )
-        .join("\n");
-      setError(skippedMessages);
+    if (!vendorName.trim()) {
+      setError("Please select a vendor before uploading.");
+      return;
     }
 
-    // refresh
-    await fetchDocs();
+    uploadingRef.current = true;
+    setLoadingUpload(true);
+    setError(null);
+    setSuccess(null);
 
-    // reset pagination to first page after upload
-    setPage(1);
-    await fetchProducts();
+    try {
+      const form = new FormData();
+      files.forEach((f) => form.append("files", f));
+      form.append("vendor_name", vendorName);
 
-    setSelectedProductIds(new Set());
-  } catch (e: any) {
-    console.error(e);
-    setError(
-      e.response?.data?.error ||
-        "Failed to upload PDFs"
-    );
-  } finally {
-    setLoadingUpload(false);
-    uploadingRef.current = false;
-  }
-};
+      const res = await api.post(ENDPOINTS.UPLOAD, form, {
+        headers: { "Content-Type": "multipart/form-data" },
+      });
 
+      setFiles([]);
+      if (fileInputRef.current) fileInputRef.current.value = "";
+
+      const uploaded = res.data.uploaded ?? 0;
+      const skipped = res.data.skipped ?? 0;
+
+      let message = `Uploaded ${uploaded} PDF(s).`;
+      if (skipped > 0) message += ` Skipped ${skipped} duplicate(s).`;
+      setSuccess(message);
+
+      // Show toast for each skipped file with its reason
+      if (Array.isArray(res.data.skipped_files) && res.data.skipped_files.length > 0) {
+        const skippedMessages = res.data.skipped_files
+          .map((file: { filename: string; reason: string }) =>
+            `File "${file.filename}" was skipped: ${file.reason}`
+          )
+          .join("\n");
+        setError(skippedMessages);
+      }
+
+      // refresh
+      await fetchDocs();
+
+      // reset pagination to first page after upload
+      setPage(1);
+      await fetchProducts();
+
+      setSelectedProductIds(new Set());
+    } catch (e: any) {
+      console.error(e);
+      setError(
+        e.response?.data?.error ||
+          "Failed to upload PDFs"
+      );
+    } finally {
+      setLoadingUpload(false);
+      setVendorName("");
+      uploadingRef.current = false;
+    }
+  };
 
   const toggleSelectProduct = (id?: number) => {
     if (!id) return;
@@ -782,13 +785,41 @@ const upload = async () => {
               </thead>
 
               <tbody className="divide-y divide-white/10">
-                {products.length === 0 ? (
+                {loadingProducts ? (
                   <tr>
                     <td
                       colSpan={12 + allExtraFields.size}
-                      className="px-4 py-8 text-center text-slate-400"
+                      className="px-4 py-16 text-center"
                     >
-                      No products available
+                      <div className="flex flex-col items-center justify-center">
+                        <svg className="animate-spin h-8 w-8 text-cyan-400 mb-3" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                          <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+                          <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8z"></path>
+                        </svg>
+                        <span className="text-cyan-300 font-semibold text-lg">Loading products...</span>
+                      </div>
+                    </td>
+                  </tr>
+                ) : products.length === 0 ? (
+                  <tr>
+                    <td
+                      colSpan={12 + allExtraFields.size}
+                      className="px-4 py-16 text-center"
+                    >
+                      <div className="flex flex-col items-center justify-center">
+                        <svg width="64" height="64" fill="none" className="mb-3">
+                          <circle cx="32" cy="32" r="30" fill="#0ea5e9" fillOpacity="0.08" />
+                          <path d="M20 40c0-4 8-6 12-6s12 2 12 6v2H20v-2Z" fill="#38bdf8" />
+                          <ellipse cx="32" cy="28" rx="6" ry="8" fill="#38bdf8" />
+                          <ellipse cx="32" cy="28" rx="3" ry="4" fill="#0ea5e9" />
+                        </svg>
+                        <span className="text-slate-400 font-semibold text-lg">
+                          No product data available
+                        </span>
+                        <span className="text-slate-500 text-sm mt-1">
+                          Upload a PDF to get started!
+                        </span>
+                      </div>
                     </td>
                   </tr>
                 ) : (
