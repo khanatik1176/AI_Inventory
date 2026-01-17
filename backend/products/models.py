@@ -12,8 +12,15 @@ class PDFDocument(models.Model):
 class Product(models.Model):
     document = models.ForeignKey(PDFDocument, on_delete=models.CASCADE, related_name="products")
 
-    # Standardized fields
+    # base extracted name (never changes)
+    original_name = models.CharField(max_length=255, default="", blank=True)
+
+    # display name (you WILL overwrite this with formatted name)
     product_name = models.CharField(max_length=255)
+
+    # online-generated SEO name (stored separately)
+    seo_name = models.CharField(max_length=500, default="", blank=True)
+
     brand_name = models.CharField(max_length=255, blank=True)
     product_type = models.CharField(max_length=255, blank=True)
     retail_price = models.FloatField(default=0)
@@ -23,13 +30,7 @@ class Product(models.Model):
     variants = models.CharField(max_length=255, blank=True)
     vendor_name = models.CharField(max_length=255, blank=True)
 
-    # Dynamic columns from PDF headers you don't have
     extra_fields = models.JSONField(default=dict, blank=True)
-
-    # Gemini output (SEO metadata)
     metadata = models.JSONField(default=dict, blank=True)
 
     created_at = models.DateTimeField(auto_now_add=True)
-
-    def __str__(self):
-        return f"{self.brand_name} {self.product_name}".strip()

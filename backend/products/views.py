@@ -8,8 +8,8 @@ from rest_framework import status
 
 from .models import Product, PDFDocument
 from .parsers.pdf_parser import parse_pdf
-from .services import generate_product_metadata
-
+from .services import generate_product_metadata, fetch_titles, build_seo_name
+from django.http import HttpResponse
 
 recent_uploads = {}
 
@@ -151,7 +151,7 @@ class DocumentListView(APIView):
             ]
         })
 
-from .models import Product
+
 
 class ProductTableView(APIView):
     def get(self, request):
@@ -163,6 +163,7 @@ class ProductTableView(APIView):
                     "id": p.id,
                     "document": p.document.filename,
                     "product_name": p.product_name,
+                    "seo_name": p.seo_name,  # ✅ ADD THIS
                     "brand_name": p.brand_name,
                     "product_type": p.product_type,
                     "retail_price": p.retail_price,
@@ -177,8 +178,8 @@ class ProductTableView(APIView):
             ]
         })
 
-from django.http import HttpResponse
-import pandas as pd
+
+
 
 class ExportCSVView(APIView):
     def get(self, request):
@@ -244,6 +245,91 @@ class GenerateMetadataView(APIView):
                 p.metadata = generate_product_metadata(payload)
                 p.save(update_fields=["metadata"])
                 updated += 1
+            except Exception as e:
+                failed.append({"id": p.id, "error": str(e)})
+
+        return Response({"updated": updated, "failed": failed})
+
+        
+def _clean_piece(s: str) -> str:
+    s = (s or "").strip()
+    s = " ".join(s.split())
+    return s.replace("/", "-").replace("\\", "-").replace("|", "-")
+
+
+class GenerateFormattedNameView(APIView):
+    """
+    Updates product_name ONLY ONCE and ONLY IF seo_name exists.
+
+    Final format:
+      Brand_Name-Product_Name-Product_Type-{seo_name}
+    """
+
+    def post(self, request):
+        ids = request.data.get("product_ids", [])
+        if not ids:
+            return Response({"error": "product_ids required"}, status=400)
+
+        updated = 0
+        skipped = []
+
+        for p in Product.objects.filter(id__in=ids):
+            # ✅ must have seo_name
+            if not p.seo_name or not str(p.seo_name).strip():
+                skipped.append({"id": p.id, "reason": "seo_name not generated yet"})
+                continue
+
+            # ✅ only once: we mark using a flag pattern inside product_name
+            # You can change this marker if you want
+            if p.product_name and "|SEO|" in p.product_name:
+                skipped.append({"id": p.id, "reason": "already formatted once"})
+                continue
+
+            brand = _clean_piece(p.brand_name) or "Brand"
+            base = _clean_piece(p.product_name) or "Product"
+            ptype = _clean_piece(p.product_type) or "Type"
+            seo = _clean_piece(p.seo_name)
+
+            # ✅ CONCAT ACTUAL seo_name
+            formatted = f"{brand}-{base}-{ptype}|SEO|{seo}"
+
+            # ensure length <= 255
+            p.product_name = formatted[:255]
+            p.save(update_fields=["product_name"])
+            updated += 1
+
+        return Response({"updated": updated, "skipped": skipped})
+
+
+class GenerateOnlineSeoNameView(APIView):
+    def post(self, request):
+        ids = request.data.get("product_ids", [])
+        if not ids:
+            return Response({"error": "product_ids required"}, status=400)
+
+        updated = 0
+        failed = []
+
+        for p in Product.objects.filter(id__in=ids):
+            try:
+                query = f"{p.brand_name} {p.product_name} {p.product_type}"
+                suggestions = fetch_titles(query, 15)
+
+                seo_name = build_seo_name({
+                    "brand": p.brand_name,
+                    "name": p.product_name,
+                    "type": p.product_type,
+                    "color": p.color,
+                }, suggestions)
+
+                # ✅ fallback if empty
+                if not seo_name or not str(seo_name).strip():
+                    seo_name = f"{p.brand_name} {p.product_name} {p.product_type}".strip()
+
+                p.seo_name = seo_name[:500]
+                p.save(update_fields=["seo_name"])
+                updated += 1
+
             except Exception as e:
                 failed.append({"id": p.id, "error": str(e)})
 

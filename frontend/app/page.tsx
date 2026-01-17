@@ -2,12 +2,14 @@
 
 import Link from "next/link";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import toast from "react-hot-toast";
 import { api, API_BASE } from "@/lib/api";
 
 type Product = {
   id?: number;
   document: string;
   product_name: string;
+  seo_name?: string;
   brand_name: string;
   product_type: string;
   retail_price: number;
@@ -26,7 +28,6 @@ type Doc = {
   total_rows: number;
   uploaded_at: string;
   extra_fields?: string[];
-  products?: Product[];
 };
 
 function classNames(...c: Array<string | false | null | undefined>) {
@@ -39,11 +40,13 @@ export default function Page() {
   const [products, setProducts] = useState<Product[]>([]);
   const [openDocIds, setOpenDocIds] = useState<Record<number, boolean>>({});
 
+  // Documents section collapsible (default collapsed)
+  const [docsCollapsed, setDocsCollapsed] = useState(true);
+
   const [loadingUpload, setLoadingUpload] = useState(false);
   const [loadingMeta, setLoadingMeta] = useState(false);
-
-  const [error, setError] = useState<string | null>(null);
-  const [success, setSuccess] = useState<string | null>(null);
+  const [loadingSeoOnline, setLoadingSeoOnline] = useState(false);
+  const [loadingFormatName, setLoadingFormatName] = useState(false);
 
   const [allExtraFields, setAllExtraFields] = useState<Set<string>>(new Set());
   const [selectedProductIds, setSelectedProductIds] = useState<Set<number>>(
@@ -58,136 +61,36 @@ export default function Page() {
     [products]
   );
 
+  const anyLoading =
+    loadingUpload ||
+    loadingMeta ||
+    loadingSeoOnline ||
+    loadingFormatName ||
+    uploadingRef.current;
+
   const fetchDocs = useCallback(async () => {
-    try {
-      const res = await api.get("/api/products/documents/");
-      setDocs(res.data.documents || res.data);
-    } catch (e) {
-      console.error(e);
-      setError("Failed to fetch documents");
-    }
+    const res = await api.get("/api/products/documents/");
+    setDocs(res.data.documents || res.data);
   }, []);
 
   const fetchProducts = useCallback(async () => {
-    try {
-      const res = await api.get("/api/products/list/");
-      const productsData = res.data.products || res.data;
-      setProducts(productsData);
+    const res = await api.get("/api/products/list/");
+    const productsData = res.data.products || res.data;
+    setProducts(productsData);
 
-      const extraFieldKeys = new Set<string>();
-      productsData.forEach((p: Product) => {
-        if (p.extra_fields) {
-          Object.keys(p.extra_fields).forEach((key) => extraFieldKeys.add(key));
-        }
-      });
-      setAllExtraFields(extraFieldKeys);
-    } catch (e) {
-      console.error(e);
-      setError("Failed to fetch products");
-    }
+    const extraFieldKeys = new Set<string>();
+    productsData.forEach((p: Product) => {
+      if (p.extra_fields) {
+        Object.keys(p.extra_fields).forEach((key) => extraFieldKeys.add(key));
+      }
+    });
+    setAllExtraFields(extraFieldKeys);
   }, []);
 
   useEffect(() => {
-    fetchDocs();
-    fetchProducts();
+    fetchDocs().catch(() => toast.error("Failed to fetch documents"));
+    fetchProducts().catch(() => toast.error("Failed to fetch products"));
   }, [fetchDocs, fetchProducts]);
-
-  // toast auto-hide
-  useEffect(() => {
-    if (!error && !success) return;
-    const timer = setTimeout(() => {
-      setError(null);
-      setSuccess(null);
-    }, 5000);
-    return () => clearTimeout(timer);
-  }, [error, success]);
-
-  const toggleDoc = (id: number) =>
-    setOpenDocIds((prev) => ({ ...prev, [id]: !prev[id] }));
-
-  const onDrop = (e: React.DragEvent) => {
-    e.preventDefault();
-    const dropped = Array.from(e.dataTransfer.files).filter(
-      (f) => f.type === "application/pdf"
-    );
-    if (!dropped.length) return;
-
-    setFiles((prev) => {
-      const existing = new Set(prev.map((f) => `${f.name}-${f.size}`));
-      const newOnes = dropped.filter(
-        (f) => !existing.has(`${f.name}-${f.size}`)
-      );
-      return [...prev, ...newOnes];
-    });
-
-    setError(null);
-  };
-
-  const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const selected = Array.from(e.target.files || []);
-    if (!selected.length) return;
-
-    setFiles((prev) => {
-      const existing = new Set(prev.map((f) => `${f.name}-${f.size}`));
-      const newOnes = selected.filter(
-        (f) => !existing.has(`${f.name}-${f.size}`)
-      );
-      return [...prev, ...newOnes];
-    });
-
-    setError(null);
-  };
-
-  const removeFile = (idx: number) => {
-    setFiles((s) => s.filter((_, i) => i !== idx));
-    if (fileInputRef.current) fileInputRef.current.value = "";
-  };
-
-  const clearAllFiles = () => {
-    setFiles([]);
-    if (fileInputRef.current) fileInputRef.current.value = "";
-  };
-
-  const upload = async () => {
-    if (files.length === 0 || uploadingRef.current) return;
-
-    uploadingRef.current = true;
-    setLoadingUpload(true);
-    setError(null);
-    setSuccess(null);
-
-    try {
-      const form = new FormData();
-      files.forEach((f) => form.append("files", f));
-
-      const res = await api.post("/api/products/upload-pdfs/", form, {
-        headers: { "Content-Type": "multipart/form-data" },
-      });
-
-      setFiles([]);
-      if (fileInputRef.current) fileInputRef.current.value = "";
-
-      const uploaded = res.data.uploaded || res.data.documents?.length || 0;
-      const skipped = res.data.skipped || 0;
-
-      let message = `Successfully uploaded ${uploaded} PDF(s)`;
-      if (skipped > 0) message += `, ${skipped} skipped (duplicate)`;
-      setSuccess(message);
-
-      // Refresh data
-      await fetchDocs();
-      await fetchProducts();
-
-      // Clear selection because product list changed
-      setSelectedProductIds(new Set());
-    } catch (e: any) {
-      console.error(e);
-      setError(e.response?.data?.error || "Failed to upload PDFs");
-    } finally {
-      setLoadingUpload(false);
-      uploadingRef.current = false;
-    }
-  };
 
   // selection helpers
   const toggleSelectProduct = (id?: number) => {
@@ -207,111 +110,233 @@ export default function Page() {
     setSelectedProductIds(new Set(ids));
   };
 
-  // metadata generation
+  // Selected products (full objects)
+  const selectedProducts = useMemo(() => {
+    const idSet = selectedProductIds;
+    return products.filter((p) => p.id && idSet.has(p.id));
+  }, [products, selectedProductIds]);
+
+  // ✅ Rule: Format allowed only if ALL selected have seo_name AND none already formatted
+  const canFormatSelected = useMemo(() => {
+    if (selectedProducts.length === 0) return false;
+
+    const allHaveSeo = selectedProducts.every(
+      (p) => p.seo_name && String(p.seo_name).trim().length > 0
+    );
+
+const noneAlreadyFormatted = selectedProducts.every(
+  (p) => !p.product_name?.includes("|SEO|")
+);
+    return allHaveSeo && noneAlreadyFormatted;
+  }, [selectedProducts]);
+
+  const toggleDoc = (id: number) =>
+    setOpenDocIds((prev) => ({ ...prev, [id]: !prev[id] }));
+
+  const onDrop = (e: React.DragEvent) => {
+    e.preventDefault();
+    const dropped = Array.from(e.dataTransfer.files).filter(
+      (f) => f.type === "application/pdf"
+    );
+    if (!dropped.length) return;
+
+    setFiles((prev) => {
+      const existing = new Set(prev.map((f) => `${f.name}-${f.size}`));
+      const newOnes = dropped.filter(
+        (f) => !existing.has(`${f.name}-${f.size}`)
+      );
+      return [...prev, ...newOnes];
+    });
+  };
+
+  const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const selected = Array.from(e.target.files || []);
+    if (!selected.length) return;
+
+    setFiles((prev) => {
+      const existing = new Set(prev.map((f) => `${f.name}-${f.size}`));
+      const newOnes = selected.filter(
+        (f) => !existing.has(`${f.name}-${f.size}`)
+      );
+      return [...prev, ...newOnes];
+    });
+  };
+
+  const removeFile = (idx: number) => {
+    setFiles((s) => s.filter((_, i) => i !== idx));
+    if (fileInputRef.current) fileInputRef.current.value = "";
+  };
+
+  const clearAllFiles = () => {
+    setFiles([]);
+    if (fileInputRef.current) fileInputRef.current.value = "";
+  };
+
+  const upload = async () => {
+    if (files.length === 0 || uploadingRef.current) return;
+
+    uploadingRef.current = true;
+    setLoadingUpload(true);
+
+    const t = toast.loading("Uploading PDFs...");
+
+    try {
+      const form = new FormData();
+      files.forEach((f) => form.append("files", f));
+
+      const res = await api.post("/api/products/upload-pdfs/", form, {
+        headers: { "Content-Type": "multipart/form-data" },
+      });
+
+      const uploaded = res.data.uploaded || res.data.documents?.length || 0;
+      const skipped = res.data.skipped || 0;
+
+      toast.success(
+        `Uploaded ${uploaded} PDF(s)${skipped ? `, skipped ${skipped}` : ""}`,
+        { id: t }
+      );
+
+      setFiles([]);
+      if (fileInputRef.current) fileInputRef.current.value = "";
+
+      await fetchDocs();
+      await fetchProducts();
+
+      setSelectedProductIds(new Set());
+      setDocsCollapsed(true);
+    } catch (e: any) {
+      toast.error(e.response?.data?.error || "Upload failed", { id: t });
+    } finally {
+      setLoadingUpload(false);
+      uploadingRef.current = false;
+    }
+  };
+
+  // metadata generation (optional)
   const generateMetadataForSelected = async () => {
     const ids = Array.from(selectedProductIds);
-    if (ids.length === 0) {
-      setError("Select at least 1 product first.");
-      return;
-    }
+    if (ids.length === 0) return toast.error("Select at least 1 product");
 
     setLoadingMeta(true);
-    setError(null);
-    setSuccess(null);
+    const t = toast.loading("Generating metadata...");
 
     try {
       const res = await api.post("/api/products/generate-metadata/", {
         product_ids: ids,
       });
+
       const updated = res.data.updated ?? 0;
       const failed = res.data.failed?.length ?? 0;
 
-      setSuccess(
-        `Metadata generated: ${updated} updated${
-          failed ? `, ${failed} failed` : ""
-        }`
+      toast.success(
+        `Metadata updated: ${updated}${failed ? `, failed ${failed}` : ""}`,
+        { id: t }
       );
 
       await fetchProducts();
     } catch (e: any) {
-      console.error(e);
-      setError(e.response?.data?.error || "Failed to generate metadata");
+      toast.error(e.response?.data?.error || "Metadata generation failed", {
+        id: t,
+      });
     } finally {
       setLoadingMeta(false);
     }
   };
 
-  const generateMetadataForDocument = async (docId: number) => {
-    setLoadingMeta(true);
-    setError(null);
-    setSuccess(null);
+  // ✅ Online SEO name -> updates seo_name
+  const generateSeoNamesOnline = async () => {
+    const ids = Array.from(selectedProductIds);
+    if (ids.length === 0) return toast.error("Select at least 1 product");
+
+    setLoadingSeoOnline(true);
+    const t = toast.loading("Generating SEO names (online)...");
 
     try {
-      const res = await api.post("/api/products/generate-metadata/", {
-        document_id: docId,
+      const res = await api.post("/api/products/generate-online-seo-name/", {
+        product_ids: ids,
       });
+
       const updated = res.data.updated ?? 0;
       const failed = res.data.failed?.length ?? 0;
 
-      setSuccess(
-        `Metadata generated for document: ${updated} updated${
-          failed ? `, ${failed} failed` : ""
-        }`
+      toast.success(
+        `SEO names updated: ${updated}${failed ? `, failed ${failed}` : ""}`,
+        { id: t }
       );
+
       await fetchProducts();
     } catch (e: any) {
-      console.error(e);
-      setError(
-        e.response?.data?.error ||
-          "Failed to generate metadata for this document"
-      );
+      toast.error(e.response?.data?.error || "SEO generation failed", { id: t });
     } finally {
-      setLoadingMeta(false);
+      setLoadingSeoOnline(false);
     }
   };
 
+  // ✅ Format -> updates product_name (backend enforces: seo_name required + only once)
+  const generateFormattedProductName = async () => {
+    const ids = Array.from(selectedProductIds);
+    if (ids.length === 0) return toast.error("Select at least 1 product");
+
+    // Frontend guard (backend also guards)
+    if (!canFormatSelected) {
+      return toast.error(
+        "Generate SEO Name first (and ensure names are not already formatted)."
+      );
+    }
+
+    setLoadingFormatName(true);
+    const t = toast.loading("Updating product names (format)...");
+
+    try {
+      const res = await api.post("/api/products/generate-formatted-name/", {
+        product_ids: ids,
+      });
+
+      const updated = res.data.updated ?? 0;
+      const skipped = res.data.skipped ?? [];
+
+      if (skipped.length) {
+        toast(
+          `Updated: ${updated}. Skipped: ${skipped.length} (missing seo_name or already formatted).`,
+          { id: t, icon: "⚠️" }
+        );
+      } else {
+        toast.success(`Product names updated: ${updated}`, { id: t });
+      }
+
+      await fetchProducts();
+    } catch (e: any) {
+      toast.error(e.response?.data?.error || "Format name update failed", {
+        id: t,
+      });
+    } finally {
+      setLoadingFormatName(false);
+    }
+  };
+
+  // copy helpers
   const copyMetadata = async (p: Product) => {
     try {
       const text = JSON.stringify(p.metadata || {}, null, 2);
       await navigator.clipboard.writeText(text);
-      setSuccess("Metadata copied to clipboard");
-    } catch (e) {
-      console.error(e);
-      setError("Failed to copy");
+      toast.success("Metadata copied");
+    } catch {
+      toast.error("Copy failed");
+    }
+  };
+
+  const copySeoName = async (p: Product) => {
+    try {
+      await navigator.clipboard.writeText(p.seo_name || "");
+      toast.success("SEO name copied");
+    } catch {
+      toast.error("Copy failed");
     }
   };
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-slate-900 via-zinc-900 to-black p-6">
       <div className="w-full max-w-7xl mx-auto">
-        {/* Toasts */}
-        {(error || success) && (
-          <div className="fixed top-4 right-4 z-50 max-w-md">
-            {error && (
-              <div className="bg-red-500/90 backdrop-blur-sm text-white px-4 py-3 rounded-lg shadow-lg flex items-center gap-3 mb-2">
-                <span className="flex-1">{error}</span>
-                <button
-                  onClick={() => setError(null)}
-                  className="ml-auto text-white/90 hover:text-white"
-                >
-                  ×
-                </button>
-              </div>
-            )}
-            {success && (
-              <div className="bg-green-500/90 backdrop-blur-sm text-white px-4 py-3 rounded-lg shadow-lg flex items-center gap-3">
-                <span className="flex-1">{success}</span>
-                <button
-                  onClick={() => setSuccess(null)}
-                  className="ml-auto text-white/90 hover:text-white"
-                >
-                  ×
-                </button>
-              </div>
-            )}
-          </div>
-        )}
-
         {/* Header */}
         <div className="bg-white/5 border border-white/10 rounded-2xl shadow-2xl p-6 backdrop-blur-sm mb-6">
           <header className="flex flex-col md:flex-row items-start md:items-center justify-between gap-4">
@@ -320,22 +345,11 @@ export default function Page() {
                 AI Inventory Manager
               </h1>
               <p className="text-sm text-slate-400 mt-1">
-                Upload PDF price lists, extract products, generate SEO metadata
-              </p>
-              <p className="text-xs text-slate-500 mt-1">
-                API: <span className="text-slate-300">{API_BASE}</span>
+                Upload PDFs, extract products, generate SEO + metadata
               </p>
             </div>
 
             <div className="flex flex-wrap gap-2">
-              <Link
-                href={`${API_BASE}/api/products/export-excel/`}
-                target="_blank"
-                className="inline-flex items-center gap-2 px-5 py-2.5 rounded-lg bg-gradient-to-r from-cyan-500 to-blue-500 text-black font-semibold hover:scale-105 transition shadow-lg"
-              >
-                Export Excel
-              </Link>
-
               <Link
                 href={`${API_BASE}/api/products/export-csv/`}
                 target="_blank"
@@ -374,8 +388,7 @@ export default function Page() {
                   Drag & drop PDF files here
                 </span>
                 <span className="block text-sm text-slate-400 mt-2">
-                  or{" "}
-                  <span className="text-cyan-300 underline">browse files</span>
+                  or <span className="text-cyan-300 underline">browse files</span>
                 </span>
               </label>
 
@@ -441,83 +454,81 @@ export default function Page() {
           )}
         </div>
 
-        {/* Documents */}
+        {/* Documents - Collapsible (default collapsed) */}
         <div className="bg-white/5 border border-white/10 rounded-2xl shadow-2xl p-6 backdrop-blur-sm mb-6">
-          <h2 className="text-xl font-bold text-slate-200 mb-4">
-            Uploaded Documents ({docs.length})
-          </h2>
+          <button
+            onClick={() => setDocsCollapsed((v) => !v)}
+            className="w-full flex items-center justify-between"
+          >
+            <h2 className="text-xl font-bold text-slate-200">
+              Uploaded Documents ({docs.length})
+            </h2>
+            <span className="text-slate-400 text-sm">
+              {docsCollapsed ? "Show ▾" : "Hide ▴"}
+            </span>
+          </button>
 
-          {docs.length === 0 ? (
-            <div className="text-center py-12 text-slate-400">
-              No documents uploaded yet
-            </div>
-          ) : (
-            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-              {docs.map((d) => (
-                <article
-                  key={d.id}
-                  className="p-5 rounded-xl bg-gradient-to-br from-white/5 to-white/2 border border-white/10 hover:border-cyan-500/50 transition"
-                >
-                  <div className="flex items-start justify-between gap-3 mb-3">
-                    <div className="flex-1 min-w-0">
-                      <div className="text-sm text-cyan-200 font-semibold truncate mb-1">
-                        {d.filename}
-                      </div>
-                      <div className="text-xs text-slate-400">
-                        {d.total_rows} rows •{" "}
-                        {new Date(d.uploaded_at).toLocaleDateString()}
-                      </div>
-                      {d.extra_fields && d.extra_fields.length > 0 && (
-                        <div className="mt-2 flex flex-wrap gap-1">
-                          {d.extra_fields.slice(0, 6).map((field, idx) => (
-                            <span
-                              key={idx}
-                              className="text-xs bg-cyan-500/20 text-cyan-300 px-2 py-0.5 rounded"
-                            >
-                              {field}
-                            </span>
-                          ))}
-                          {d.extra_fields.length > 6 && (
-                            <span className="text-xs text-slate-400">
-                              +{d.extra_fields.length - 6} more
-                            </span>
+          {!docsCollapsed && (
+            <>
+              {docs.length === 0 ? (
+                <div className="text-center py-12 text-slate-400">
+                  No documents uploaded yet
+                </div>
+              ) : (
+                <div className="mt-4 grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                  {docs.map((d) => (
+                    <article
+                      key={d.id}
+                      className="p-5 rounded-xl bg-gradient-to-br from-white/5 to-white/2 border border-white/10 hover:border-cyan-500/50 transition"
+                    >
+                      <div className="flex items-start justify-between gap-3 mb-3">
+                        <div className="flex-1 min-w-0">
+                          <div className="text-sm text-cyan-200 font-semibold truncate mb-1">
+                            {d.filename}
+                          </div>
+                          <div className="text-xs text-slate-400">
+                            {d.total_rows} rows •{" "}
+                            {new Date(d.uploaded_at).toLocaleDateString()}
+                          </div>
+                          {d.extra_fields && d.extra_fields.length > 0 && (
+                            <div className="mt-2 flex flex-wrap gap-1">
+                              {d.extra_fields.slice(0, 6).map((field, idx) => (
+                                <span
+                                  key={idx}
+                                  className="text-xs bg-cyan-500/20 text-cyan-300 px-2 py-0.5 rounded"
+                                >
+                                  {field}
+                                </span>
+                              ))}
+                              {d.extra_fields.length > 6 && (
+                                <span className="text-xs text-slate-400">
+                                  +{d.extra_fields.length - 6} more
+                                </span>
+                              )}
+                            </div>
                           )}
                         </div>
+
+                        <button
+                          onClick={() => toggleDoc(d.id)}
+                          className="px-3 py-1.5 rounded-md bg-white/10 text-xs text-white hover:bg-white/20 transition"
+                        >
+                          {openDocIds[d.id] ? "Hide" : "View"}
+                        </button>
+                      </div>
+
+                      {openDocIds[d.id] && (
+                        <div className="mt-4 pt-4 border-t border-white/10">
+                          <pre className="text-xs bg-black/30 p-3 rounded text-slate-300 overflow-x-auto max-h-64">
+                            {JSON.stringify(d, null, 2)}
+                          </pre>
+                        </div>
                       )}
-                    </div>
-
-                    <div className="flex gap-2">
-                      <button
-                        onClick={() => generateMetadataForDocument(d.id)}
-                        disabled={loadingMeta}
-                        className={classNames(
-                          "px-3 py-1.5 rounded-md text-xs transition",
-                          "bg-cyan-500/20 text-cyan-200 hover:bg-cyan-500/30",
-                          loadingMeta && "opacity-50 cursor-not-allowed"
-                        )}
-                      >
-                        {loadingMeta ? "Working..." : "Generate SEO"}
-                      </button>
-
-                      <button
-                        onClick={() => toggleDoc(d.id)}
-                        className="px-3 py-1.5 rounded-md bg-white/10 text-xs text-white hover:bg-white/20 transition"
-                      >
-                        {openDocIds[d.id] ? "Hide" : "View"}
-                      </button>
-                    </div>
-                  </div>
-
-                  {openDocIds[d.id] && (
-                    <div className="mt-4 pt-4 border-t border-white/10">
-                      <pre className="text-xs bg-black/30 p-3 rounded text-slate-300 overflow-x-auto max-h-64">
-                        {JSON.stringify(d, null, 2)}
-                      </pre>
-                    </div>
-                  )}
-                </article>
-              ))}
-            </div>
+                    </article>
+                  ))}
+                </div>
+              )}
+            </>
           )}
         </div>
 
@@ -541,12 +552,43 @@ export default function Page() {
                 disabled={loadingMeta || selectedProductIds.size === 0}
                 className={classNames(
                   "px-4 py-2 rounded-lg font-semibold transition",
-                  "bg-cyan-500 text-black hover:brightness-110",
+                  "bg-white/10 text-white hover:bg-white/20",
                   (loadingMeta || selectedProductIds.size === 0) &&
                     "opacity-50 cursor-not-allowed"
                 )}
               >
-                {loadingMeta ? "Generating..." : "Generate Metadata (Selected)"}
+                {loadingMeta ? "Generating..." : "Generate Metadata"}
+              </button>
+
+              <button
+                onClick={generateSeoNamesOnline}
+                disabled={loadingSeoOnline || selectedProductIds.size === 0}
+                className={classNames(
+                  "px-4 py-2 rounded-lg font-semibold transition",
+                  "bg-cyan-500 text-black hover:brightness-110",
+                  (loadingSeoOnline || selectedProductIds.size === 0) &&
+                    "opacity-50 cursor-not-allowed"
+                )}
+              >
+                {loadingSeoOnline ? "Working..." : "Generate SEO Name (Online)"}
+              </button>
+
+              <button
+                onClick={generateFormattedProductName}
+                disabled={loadingFormatName || !canFormatSelected}
+                className={classNames(
+                  "px-4 py-2 rounded-lg font-semibold transition",
+                  "bg-purple-500 text-white hover:brightness-110",
+                  (loadingFormatName || !canFormatSelected) &&
+                    "opacity-50 cursor-not-allowed"
+                )}
+                title={
+                  !canFormatSelected
+                    ? "Generate SEO Name first, and ensure product names are not already formatted."
+                    : ""
+                }
+              >
+                {loadingFormatName ? "Working..." : "Format Product Name"}
               </button>
 
               <button
@@ -555,11 +597,11 @@ export default function Page() {
                     ? clearSelection()
                     : selectAll()
                 }
-                disabled={loadingMeta || products.length === 0}
+                disabled={anyLoading || products.length === 0}
                 className={classNames(
                   "px-4 py-2 rounded-lg transition",
                   "bg-white/10 text-white hover:bg-white/20",
-                  (loadingMeta || products.length === 0) &&
+                  (anyLoading || products.length === 0) &&
                     "opacity-50 cursor-not-allowed"
                 )}
               >
@@ -570,11 +612,11 @@ export default function Page() {
 
               <button
                 onClick={clearSelection}
-                disabled={loadingMeta || selectedProductIds.size === 0}
+                disabled={anyLoading || selectedProductIds.size === 0}
                 className={classNames(
                   "px-4 py-2 rounded-lg transition",
                   "bg-white/10 text-white hover:bg-white/20",
-                  (loadingMeta || selectedProductIds.size === 0) &&
+                  (anyLoading || selectedProductIds.size === 0) &&
                     "opacity-50 cursor-not-allowed"
                 )}
               >
@@ -602,6 +644,7 @@ export default function Page() {
 
                   <th className="px-4 py-3 font-semibold">Document</th>
                   <th className="px-4 py-3 font-semibold">Product Name</th>
+                  <th className="px-4 py-3 font-semibold">SEO Name</th>
                   <th className="px-4 py-3 font-semibold">Brand</th>
                   <th className="px-4 py-3 font-semibold">Type</th>
                   <th className="px-4 py-3 font-semibold">Retail</th>
@@ -627,7 +670,7 @@ export default function Page() {
                 {products.length === 0 ? (
                   <tr>
                     <td
-                      colSpan={12 + allExtraFields.size}
+                      colSpan={13 + allExtraFields.size}
                       className="px-4 py-8 text-center text-slate-400"
                     >
                       No products available
@@ -648,6 +691,25 @@ export default function Page() {
                       <td className="px-4 py-3 text-white font-medium">
                         {p.product_name}
                       </td>
+
+                      <td className="px-4 py-3 text-cyan-200">
+                        {p.seo_name && p.seo_name.trim() ? (
+                          <div className="flex items-center gap-2">
+                            <span className="truncate max-w-[260px]">
+                              {p.seo_name}
+                            </span>
+                            <button
+                              onClick={() => copySeoName(p)}
+                              className="text-xs px-2 py-1 rounded bg-white/10 hover:bg-white/20 transition"
+                            >
+                              Copy
+                            </button>
+                          </div>
+                        ) : (
+                          <span className="text-slate-500 text-xs">—</span>
+                        )}
+                      </td>
+
                       <td className="px-4 py-3 text-slate-300">{p.brand_name}</td>
                       <td className="px-4 py-3 text-slate-400">
                         {p.product_type}
@@ -712,8 +774,8 @@ export default function Page() {
           </div>
 
           <p className="text-xs text-slate-500 mt-3">
-            Tip: Use “Select All” then generate metadata once for faster SEO
-            generation.
+            ✅ “Format Product Name” is enabled only when all selected products
+            have <b>seo_name</b> and are not already formatted.
           </p>
         </div>
       </div>

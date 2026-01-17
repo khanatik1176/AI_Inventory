@@ -5,6 +5,8 @@ from .views import (
     ProductTableView,
     ExportCSVView,
     GenerateMetadataView,
+    GenerateFormattedNameView,
+    GenerateOnlineSeoNameView,
 )
 
 urlpatterns = [
@@ -13,4 +15,6 @@ urlpatterns = [
     path("list/", ProductTableView.as_view()),
     path("export-csv/", ExportCSVView.as_view()),
     path("generate-metadata/", GenerateMetadataView.as_view()),
+    path("generate-formatted-name/", GenerateFormattedNameView.as_view()),
+    path("generate-online-seo-name/", GenerateOnlineSeoNameView.as_view()),
 ]
