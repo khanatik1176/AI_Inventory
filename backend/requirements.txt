@@ -16,3 +16,7 @@ django-cors-headers
 groq
 dotenv
 duckduckgo-search
+gunicorn
+whitenoise
+dj-database-url
+psycopg2-binary
