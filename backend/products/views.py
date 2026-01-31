@@ -9,9 +9,11 @@ from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework import status
 
-from .models import Product, PDFDocument
+from .models import Product, PDFDocument, Vendor
 from .parsers.pdf_parser import parse_pdf
 from .services import generate_product_metadata, fetch_seo_suggestions, create_seo_name
+from .serializers import VendorSerializer, ProductSerializer
+from rest_framework import permissions
 
 
 recent_uploads = {}
@@ -89,6 +91,9 @@ class UploadPDFView(APIView):
             return Response({"error": "No PDFs uploaded"}, status=400)
         if not vendor_name:
             return Response({"error": "vendor_name is required"}, status=400)
+
+        Vendor.objects.get_or_create(name=vendor_name)
+
 
         clean_old_uploads()
 
@@ -307,6 +312,7 @@ class GenerateOnlineSeoNameView(APIView):
         return Response({"updated": updated, "failed": failed})
 
 
+
 class GenerateFormattedNameView(APIView):
     def post(self, request):
         ids = request.data.get("product_ids", [])
@@ -324,8 +330,45 @@ class GenerateFormattedNameView(APIView):
                     failed.append({"id": p.id, "error": "already generated once"})
                     continue
 
-                base = p.base_name or p.product_name
-                new_name = slug_join(p.brand_name, base, p.product_type, p.seo_name)
+                # Use base_name only - if not set, this is an error case
+                if not p.base_name or not p.base_name.strip():
+                    failed.append({"id": p.id, "error": "base_name missing - cannot generate formatted name"})
+                    continue
+
+                # Build the formatted name from individual components
+                # Only include non-empty, non-duplicate parts
+                parts = []
+                
+                # Add brand name if exists and not already in base_name
+                brand = safe_str(p.brand_name).strip()
+                base = safe_str(p.base_name).strip()
+                ptype = safe_str(p.product_type).strip()
+                seo = safe_str(p.seo_name).strip()
+                
+                if brand and brand.lower() not in base.lower():
+                    parts.append(brand)
+                
+                # Add base name (model/product identifier)
+                if base:
+                    parts.append(base)
+                
+                # Add product type if exists and not already in base_name
+                if ptype and ptype.lower() not in base.lower():
+                    parts.append(ptype)
+                
+                # Add SEO name if exists and not already in other parts
+                if seo:
+                    combined_so_far = " ".join(parts).lower()
+                    # Only add SEO parts that aren't already present
+                    seo_words = seo.split()
+                    new_seo_parts = []
+                    for word in seo_words:
+                        if word.lower() not in combined_so_far:
+                            new_seo_parts.append(word)
+                    if new_seo_parts:
+                        parts.append(" ".join(new_seo_parts))
+
+                new_name = "-".join(parts) if parts else p.base_name
 
                 p.product_name = new_name
                 p.formatted_name_generated = True
@@ -373,3 +416,66 @@ class GenerateMetadataView(APIView):
                 failed.append({"id": p.id, "error": str(e)})
 
         return Response({"updated": updated, "failed": failed})
+
+
+class VendorListCreateView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request):
+        qs = Vendor.objects.all().order_by("name")
+        return Response({"vendors": VendorSerializer(qs, many=True).data})
+
+    def post(self, request):
+        name = (request.data.get("name") or "").strip()
+        if not name:
+            return Response({"error": "name required"}, status=400)
+
+        v, created = Vendor.objects.get_or_create(name=name)
+        return Response({"vendor": VendorSerializer(v).data, "created": created}, status=201 if created else 200)
+
+
+class ManualProductCreateView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request):
+        # user can set ONLY these fields
+        allowed = {
+            "product_name", "base_name", "brand_name", "product_type",
+            "retail_price", "sale_price", "model_number", "color", "variants",
+            "vendor_name", "extra_fields",
+        }
+
+        payload = {k: request.data.get(k) for k in allowed if k in request.data}
+
+        # force-protect AI fields
+        payload["metadata"] = {}
+        payload["seo_name"] = ""
+        payload["formatted_name_generated"] = False
+
+        # ensure vendor present
+        vendor_name = (payload.get("vendor_name") or "").strip()
+        if not vendor_name:
+            return Response({"error": "vendor_name required"}, status=400)
+
+        # auto create vendor record if missing
+        from .models import Vendor
+        Vendor.objects.get_or_create(name=vendor_name)
+
+        # attach manual document
+        manual_doc, _ = PDFDocument.objects.get_or_create(
+            file_hash="__manual__",
+            defaults={"filename": "Manual Entry", "vendor_name": vendor_name, "total_rows": 0},
+        )
+
+        # if vendor differs, keep doc vendor as "Manual"
+        payload["document"] = manual_doc.id
+
+        # base_name fallback
+        if not (payload.get("base_name") or "").strip():
+            payload["base_name"] = (payload.get("product_name") or "").strip()
+
+        s = ProductSerializer(data=payload)
+        if s.is_valid():
+            p = s.save()
+            return Response({"product": ProductSerializer(p).data}, status=201)
+        return Response(s.errors, status=400)

@@ -40,3 +40,10 @@ class Product(models.Model):
     formatted_name_generated = models.BooleanField(default=False)  # ✅ generate product name only once
 
     created_at = models.DateTimeField(auto_now_add=True)
+
+class Vendor(models.Model):
+    name = models.CharField(max_length=255, unique=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    def __str__(self):
+        return self.name
