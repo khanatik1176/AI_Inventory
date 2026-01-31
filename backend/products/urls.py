@@ -7,6 +7,8 @@ from .views import (
     GenerateMetadataView,
     GenerateFormattedNameView,
     GenerateOnlineSeoNameView,
+    VendorListCreateView,
+    ManualProductCreateView,
 )
 
 urlpatterns = [
@@ -17,4 +19,10 @@ urlpatterns = [
     path("generate-metadata/", GenerateMetadataView.as_view()),
     path("generate-formatted-name/", GenerateFormattedNameView.as_view()),
     path("generate-online-seo-name/", GenerateOnlineSeoNameView.as_view()),
+    path("vendors/", VendorListCreateView.as_view()),
+    path("manual-create/", ManualProductCreateView.as_view()),
+    
+
+
+
 ]
