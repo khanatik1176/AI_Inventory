@@ -4,8 +4,9 @@ import Link from "next/link";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api, API_BASE } from "@/lib/api";
 import { logout } from "@/lib/auth";
-import AddVendorModal from "./modals/AddVendorModal";
+import { useToast } from "@/contexts/ToastContext";
 import AddProductModal from "./modals/AddProductModal";
+import UploadDocumentsModal from "./modals/UploadDocumentsModal";
 
 type Product = {
   id?: number;
@@ -46,8 +47,174 @@ type Vendor = {
   created_at: string;
 };
 
+// Color mapping for common color names
+const COLOR_MAP: Record<string, string> = {
+  // Basic colors
+  "red": "#FF0000",
+  "blue": "#0000FF",
+  "green": "#00FF00",
+  "yellow": "#FFFF00",
+  "orange": "#FFA500",
+  "purple": "#800080",
+  "pink": "#FFC0CB",
+  "brown": "#A52A2A",
+  "black": "#000000",
+  "white": "#FFFFFF",
+  "gray": "#808080",
+  "grey": "#808080",
+  "silver": "#C0C0C0",
+  "gold": "#FFD700",
+  
+  // Extended colors
+  "rose gold": "#E8B4B8",
+  "navy blue": "#000080",
+  "sky blue": "#87CEEB",
+  "dark blue": "#00008B",
+  "light blue": "#ADD8E6",
+  "teal": "#008080",
+  "turquoise": "#40E0D0",
+  "cyan": "#00FFFF",
+  "lime": "#00FF00",
+  "forest green": "#228B22",
+  "olive": "#808000",
+  "mint green": "#98FF98",
+  "dark green": "#006400",
+  "maroon": "#800000",
+  "crimson": "#DC143C",
+  "coral": "#FF7F50",
+  "salmon": "#FA8072",
+  "hot pink": "#FF69B4",
+  "magenta": "#FF00FF",
+  "violet": "#EE82EE",
+  "indigo": "#4B0082",
+  "lavender": "#E6E6FA",
+  "plum": "#DDA0DD",
+  "beige": "#F5F5DC",
+  "tan": "#D2B48C",
+  "khaki": "#F0E68C",
+  "ivory": "#FFFFF0",
+  "cream": "#FFFDD0",
+  "pearl": "#EAE0C8",
+  "charcoal": "#36454F",
+  "slate gray": "#708090",
+  "light gray": "#D3D3D3",
+  "dark gray": "#A9A9A9",
+  "bronze": "#CD7F32",
+  "copper": "#B87333",
+  "platinum": "#E5E4E2",
+  "titanium": "#878681"
+};
+
 function classNames(...c: Array<string | false | null | undefined>) {
   return c.filter(Boolean).join(" ");
+}
+
+// Improved Tooltip component with better positioning
+function Tooltip({ children, content }: { children: React.ReactNode; content: string }) {
+  const [show, setShow] = useState(false);
+  const [position, setPosition] = useState({ x: 0, y: 0 });
+  const containerRef = useRef<HTMLDivElement>(null);
+
+  const handleMouseEnter = (e: React.MouseEvent) => {
+    const rect = e.currentTarget.getBoundingClientRect();
+    const scrollTop = window.pageYOffset || document.documentElement.scrollTop;
+    const scrollLeft = window.pageXOffset || document.documentElement.scrollLeft;
+    
+    // Calculate position relative to viewport
+    const centerX = rect.left + rect.width / 2 + scrollLeft;
+    const topY = rect.top + scrollTop -300; // Position above the element with some spacing
+    
+    setPosition({
+      x: centerX,
+      y: topY
+    });
+    setShow(true);
+  };
+
+  const handleMouseLeave = () => {
+    setShow(false);
+  };
+
+  return (
+    <>
+      <div
+        ref={containerRef}
+        onMouseEnter={handleMouseEnter}
+        onMouseLeave={handleMouseLeave}
+        className="inline-block relative"
+      >
+        {children}
+      </div>
+      {show && (
+        <div
+          className="fixed z-[999] px-3 py-2 text-sm bg-slate-800/95 backdrop-blur-sm text-white rounded-lg shadow-xl border border-white/20 pointer-events-none whitespace-nowrap"
+          style={{
+            left: position.x,
+            top: position.y,
+            transform: 'translateX(-50%)',
+            maxWidth: '300px'
+          }}
+        >
+          <div className="break-words">{content}</div>
+          {/* Arrow pointing down */}
+          <div 
+            className="absolute top-full left-1/2 transform -translate-x-1/2 w-0 h-0 border-l-4 border-r-4 border-t-4 border-transparent border-t-slate-800/95"
+            style={{ filter: 'drop-shadow(0 1px 1px rgba(0,0,0,0.1))' }}
+          />
+        </div>
+      )}
+    </>
+  );
+}
+
+// Color balls component
+function ColorBalls({ colorString }: { colorString: string }) {
+  if (!colorString) return <span className="text-slate-500 text-xs">—</span>;
+
+  const colors = colorString.split(',').map(c => c.trim()).filter(Boolean);
+
+  return (
+    <div className="flex flex-wrap gap-1.5">
+      {colors.map((color, index) => {
+        const colorKey = color.toLowerCase();
+        const hexColor = COLOR_MAP[colorKey] || '#808080'; // Default to gray if color not found
+
+        return (
+          <Tooltip key={index} content={color}>
+            <div
+              className="w-5 h-5 rounded-full border-2 border-white/20 cursor-help shadow-sm"
+              style={{ backgroundColor: hexColor }}
+            />
+          </Tooltip>
+        );
+      })}
+    </div>
+  );
+}
+
+// Document icon component
+function DocumentIcon({ documentName }: { documentName: string }) {
+  const isManual = documentName === "Manual Entry" || documentName.includes("Manual");
+
+  return (
+    <Tooltip content={documentName}>
+      {isManual ? (
+        // Manual entry icon
+        <div className="flex items-center justify-center w-8 h-8 rounded-lg bg-green-500/20 border border-green-500/30 cursor-help">
+          <svg className="w-4 h-4 text-green-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
+          </svg>
+        </div>
+      ) : (
+        // File upload icon
+        <div className="flex items-center justify-center w-8 h-8 rounded-lg bg-blue-500/20 border border-blue-500/30 cursor-help">
+          <svg className="w-4 h-4 text-blue-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+          </svg>
+        </div>
+      )}
+    </Tooltip>
+  );
 }
 
 const ENDPOINTS = {
@@ -63,38 +230,30 @@ const ENDPOINTS = {
 };
 
 export default function Page() {
-  const [files, setFiles] = useState<File[]>([]);
   const [docs, setDocs] = useState<Doc[]>([]);
   const [products, setProducts] = useState<Product[]>([]);
   const [vendors, setVendors] = useState<Vendor[]>([]);
 
   const [openDocs, setOpenDocs] = useState(false);
-  const [openVendorModal, setOpenVendorModal] = useState(false);
   const [openProductModal, setOpenProductModal] = useState(false);
+  const [openUploadModal, setOpenUploadModal] = useState(false);
 
-  const [loadingUpload, setLoadingUpload] = useState(false);
   const [loadingMeta, setLoadingMeta] = useState(false);
   const [loadingSeo, setLoadingSeo] = useState(false);
   const [loadingName, setLoadingName] = useState(false);
   const [loadingProducts, setLoadingProducts] = useState(false);
-
-  const [error, setError] = useState<string | null>(null);
-  const [success, setSuccess] = useState<string | null>(null);
 
   const [allExtraFields, setAllExtraFields] = useState<Set<string>>(new Set());
   const [selectedProductIds, setSelectedProductIds] = useState<Set<number>>(
     new Set()
   );
 
-  const [vendorName, setVendorName] = useState("");
-
   // ✅ pagination state
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(20);
   const [totalPages, setTotalPages] = useState(1);
 
-  const fileInputRef = useRef<HTMLInputElement>(null);
-  const uploadingRef = useRef(false);
+  const { addToast } = useToast();
 
   const allSelectableCount = useMemo(
     () => products.filter((p) => p.id).length,
@@ -109,14 +268,14 @@ export default function Page() {
       setVendors(res.data.vendors || []);
     } catch (e: any) {
       if (e.response?.status === 401) {
-        setError("Session expired. Please log in again.");
+        addToast("error", "Session expired. Please log in again.");
         logout();
       } else {
         console.error(e);
-        setError("Failed to fetch vendors");
+        addToast("error", "Failed to fetch vendors");
       }
     }
-  }, []);
+  }, [addToast]);
 
   const fetchDocs = useCallback(async () => {
     try {
@@ -124,14 +283,14 @@ export default function Page() {
       setDocs(res.data.documents || res.data || []);
     } catch (e: any) {
       if (e.response?.status === 401) {
-        setError("Session expired. Please log in again.");
+        addToast("error", "Session expired. Please log in again.");
         logout();
       } else {
         console.error(e);
-        setError("Failed to fetch documents");
+        addToast("error", "Failed to fetch documents");
       }
     }
-  }, []);
+  }, [addToast]);
 
   const fetchProducts = useCallback(async () => {
     setLoadingProducts(true);
@@ -152,31 +311,22 @@ export default function Page() {
       setAllExtraFields(extraFieldKeys);
     } catch (e: any) {
       if (e.response?.status === 401) {
-        setError("Session expired. Please log in again.");
+        addToast("error", "Session expired. Please log in again.");
         logout();
       } else {
         console.error(e);
-        setError("Failed to fetch products");
+        addToast("error", "Failed to fetch products");
       }
     } finally {
       setLoadingProducts(false);
     }
-  }, [page, pageSize]);
+  }, [page, pageSize, addToast]);
 
   useEffect(() => {
     fetchVendors();
     fetchDocs();
     fetchProducts();
   }, [fetchVendors, fetchDocs, fetchProducts]);
-
-  useEffect(() => {
-    if (!error && !success) return;
-    const timer = setTimeout(() => {
-      setError(null);
-      setSuccess(null);
-    }, 5000);
-    return () => clearTimeout(timer);
-  }, [error, success]);
 
   const handleLogout = async () => {
     try {
@@ -185,117 +335,6 @@ export default function Page() {
       console.error("Logout error:", e);
       // Force logout even if API call fails
       logout();
-    }
-  };
-
-  const onDrop = (e: React.DragEvent) => {
-    e.preventDefault();
-    const dropped = Array.from(e.dataTransfer.files).filter(
-      (f) => f.type === "application/pdf"
-    );
-    if (!dropped.length) return;
-
-    setFiles((prev) => {
-      const existing = new Set(prev.map((f) => `${f.name}-${f.size}`));
-      const newOnes = dropped.filter(
-        (f) => !existing.has(`${f.name}-${f.size}`)
-      );
-      return [...prev, ...newOnes];
-    });
-
-    setError(null);
-  };
-
-  const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const selected = Array.from(e.target.files || []);
-    if (!selected.length) return;
-
-    setFiles((prev) => {
-      const existing = new Set(prev.map((f) => `${f.name}-${f.size}`));
-      const newOnes = selected.filter(
-        (f) => !existing.has(`${f.name}-${f.size}`)
-      );
-      return [...prev, ...newOnes];
-    });
-
-    setError(null);
-  };
-
-  const removeFile = (idx: number) => {
-    setFiles((s) => s.filter((_, i) => i !== idx));
-    if (fileInputRef.current) fileInputRef.current.value = "";
-  };
-
-  const clearAllFiles = () => {
-    setFiles([]);
-    if (fileInputRef.current) fileInputRef.current.value = "";
-  };
-
-  const upload = async () => {
-    if (files.length === 0 || uploadingRef.current) return;
-
-    if (!vendorName.trim()) {
-      setError("Please select a vendor before uploading.");
-      return;
-    }
-
-    uploadingRef.current = true;
-    setLoadingUpload(true);
-    setError(null);
-    setSuccess(null);
-
-    try {
-      const form = new FormData();
-      files.forEach((f) => form.append("files", f));
-      form.append("vendor_name", vendorName);
-
-      const res = await api.post(ENDPOINTS.UPLOAD, form, {
-        headers: { "Content-Type": "multipart/form-data" },
-      });
-
-      setFiles([]);
-      if (fileInputRef.current) fileInputRef.current.value = "";
-
-      const uploaded = res.data.uploaded ?? 0;
-      const skipped = res.data.skipped ?? 0;
-
-      let message = `Uploaded ${uploaded} PDF(s).`;
-      if (skipped > 0) message += ` Skipped ${skipped} duplicate(s).`;
-      setSuccess(message);
-
-      // Show toast for each skipped file with its reason
-      if (Array.isArray(res.data.skipped_files) && res.data.skipped_files.length > 0) {
-        const skippedMessages = res.data.skipped_files
-          .map((file: { filename: string; reason: string }) =>
-            `File "${file.filename}" was skipped: ${file.reason}`
-          )
-          .join("\n");
-        setError(skippedMessages);
-      }
-
-      // refresh
-      await fetchDocs();
-
-      // reset pagination to first page after upload
-      setPage(1);
-      await fetchProducts();
-
-      setSelectedProductIds(new Set());
-    } catch (e: any) {
-      if (e.response?.status === 401) {
-        setError("Session expired. Please log in again.");
-        logout();
-      } else {
-        console.error(e);
-        setError(
-          e.response?.data?.error ||
-            "Failed to upload PDFs"
-        );
-      }
-    } finally {
-      setLoadingUpload(false);
-      setVendorName("");
-      uploadingRef.current = false;
     }
   };
 
@@ -334,13 +373,11 @@ export default function Page() {
   const generateMetadataForSelected = async () => {
     const ids = Array.from(selectedProductIds);
     if (ids.length === 0) {
-      setError("Select at least 1 product first.");
+      addToast("warning", "Select at least 1 product first.");
       return;
     }
 
     setLoadingMeta(true);
-    setError(null);
-    setSuccess(null);
 
     try {
       const res = await api.post(ENDPOINTS.GENERATE_METADATA, {
@@ -350,7 +387,8 @@ export default function Page() {
       const updated = res.data.updated ?? 0;
       const failed = res.data.failed?.length ?? 0;
 
-      setSuccess(
+      addToast(
+        "success",
         `Metadata generated: ${updated} updated${
           failed ? `, ${failed} failed` : ""
         }`
@@ -359,11 +397,11 @@ export default function Page() {
       await fetchProducts();
     } catch (e: any) {
       if (e.response?.status === 401) {
-        setError("Session expired. Please log in again.");
+        addToast("error", "Session expired. Please log in again.");
         logout();
       } else {
         console.error(e);
-        setError(e.response?.data?.error || "Failed to generate metadata");
+        addToast("error", e.response?.data?.error || "Failed to generate metadata");
       }
     } finally {
       setLoadingMeta(false);
@@ -372,8 +410,6 @@ export default function Page() {
 
   const generateMetadataForDocument = async (docId: number) => {
     setLoadingMeta(true);
-    setError(null);
-    setSuccess(null);
 
     try {
       const res = await api.post(ENDPOINTS.GENERATE_METADATA, {
@@ -383,7 +419,8 @@ export default function Page() {
       const updated = res.data.updated ?? 0;
       const failed = res.data.failed?.length ?? 0;
 
-      setSuccess(
+      addToast(
+        "success",
         `Metadata generated for document: ${updated} updated${
           failed ? `, ${failed} failed` : ""
         }`
@@ -391,11 +428,12 @@ export default function Page() {
       await fetchProducts();
     } catch (e: any) {
       if (e.response?.status === 401) {
-        setError("Session expired. Please log in again.");
+        addToast("error", "Session expired. Please log in again.");
         logout();
       } else {
         console.error(e);
-        setError(
+        addToast(
+          "error",
           e.response?.data?.error ||
             "Failed to generate metadata for this document"
         );
@@ -408,13 +446,11 @@ export default function Page() {
   const generateOnlineSeoNameForSelected = async () => {
     const ids = Array.from(selectedProductIds);
     if (ids.length === 0) {
-      setError("Select at least 1 product first.");
+      addToast("warning", "Select at least 1 product first.");
       return;
     }
 
     setLoadingSeo(true);
-    setError(null);
-    setSuccess(null);
 
     try {
       const res = await api.post(ENDPOINTS.GENERATE_ONLINE_SEO_NAME, {
@@ -424,7 +460,8 @@ export default function Page() {
       const updated = res.data.updated ?? 0;
       const failed = res.data.failed?.length ?? 0;
 
-      setSuccess(
+      addToast(
+        "success",
         `SEO names generated: ${updated} updated${
           failed ? `, ${failed} failed` : ""
         }`
@@ -433,11 +470,11 @@ export default function Page() {
       await fetchProducts();
     } catch (e: any) {
       if (e.response?.status === 401) {
-        setError("Session expired. Please log in again.");
+        addToast("error", "Session expired. Please log in again.");
         logout();
       } else {
         console.error(e);
-        setError(e.response?.data?.error || "Failed to generate SEO names");
+        addToast("error", e.response?.data?.error || "Failed to generate SEO names");
       }
     } finally {
       setLoadingSeo(false);
@@ -447,13 +484,14 @@ export default function Page() {
   const generateFormattedNameForSelected = async () => {
     const ids = Array.from(selectedProductIds);
     if (ids.length === 0) {
-      setError("Select at least 1 product first.");
+      addToast("warning", "Select at least 1 product first.");
       return;
     }
 
     // must have seo_name first
     if (missingSeoForSelected.length > 0) {
-      setError(
+      addToast(
+        "error",
         `SEO name missing for ${missingSeoForSelected.length} selected product(s). Generate SEO name first.`
       );
       return;
@@ -461,15 +499,14 @@ export default function Page() {
 
     // must only be generated once
     if (alreadyFormattedSelected.length > 0) {
-      setError(
+      addToast(
+        "error",
         `Product name already generated once for ${alreadyFormattedSelected.length} selected product(s).`
       );
       return;
     }
 
     setLoadingName(true);
-    setError(null);
-    setSuccess(null);
 
     try {
       const res = await api.post(ENDPOINTS.GENERATE_FORMATTED_NAME, {
@@ -479,7 +516,8 @@ export default function Page() {
       const updated = res.data.updated ?? 0;
       const failed = res.data.failed?.length ?? 0;
 
-      setSuccess(
+      addToast(
+        "success",
         `Product names formatted: ${updated} updated${
           failed ? `, ${failed} failed` : ""
         }`
@@ -488,11 +526,11 @@ export default function Page() {
       await fetchProducts();
     } catch (e: any) {
       if (e.response?.status === 401) {
-        setError("Session expired. Please log in again.");
+        addToast("error", "Session expired. Please log in again.");
         logout();
       } else {
         console.error(e);
-        setError(e.response?.data?.error || "Failed to format product names");
+        addToast("error", e.response?.data?.error || "Failed to format product names");
       }
     } finally {
       setLoadingName(false);
@@ -503,44 +541,16 @@ export default function Page() {
     try {
       const text = JSON.stringify(p.metadata || {}, null, 2);
       await navigator.clipboard.writeText(text);
-      setSuccess("Metadata copied to clipboard");
+      addToast("success", "Metadata copied to clipboard");
     } catch (e) {
       console.error(e);
-      setError("Failed to copy");
+      addToast("error", "Failed to copy");
     }
   };
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-slate-900 via-zinc-900 to-black p-6">
       <div className="w-full max-w-7xl mx-auto">
-        {/* Toasts */}
-        {(error || success) && (
-          <div className="fixed top-4 right-4 z-50 max-w-md">
-            {error && (
-              <div className="bg-red-500/90 backdrop-blur-sm text-white px-4 py-3 rounded-lg shadow-lg flex items-center gap-3 mb-2">
-                <span className="flex-1">{error}</span>
-                <button
-                  onClick={() => setError(null)}
-                  className="ml-auto text-white/90 hover:text-white"
-                >
-                  ×
-                </button>
-              </div>
-            )}
-            {success && (
-              <div className="bg-green-500/90 backdrop-blur-sm text-white px-4 py-3 rounded-lg shadow-lg flex items-center gap-3">
-                <span className="flex-1">{success}</span>
-                <button
-                  onClick={() => setSuccess(null)}
-                  className="ml-auto text-white/90 hover:text-white"
-                >
-                  ×
-                </button>
-              </div>
-            )}
-          </div>
-        )}
-
         {/* Header */}
         <div className="bg-white/5 border border-white/10 rounded-2xl shadow-2xl p-6 backdrop-blur-sm mb-6">
           <header className="flex flex-col md:flex-row items-start md:items-center justify-between gap-4">
@@ -555,17 +565,23 @@ export default function Page() {
 
             <div className="flex flex-wrap gap-2">
               <button
-                onClick={() => setOpenVendorModal(true)}
-                className="inline-flex items-center gap-2 px-4 py-2.5 rounded-lg bg-cyan-500 text-white font-semibold hover:bg-cyan-600 transition shadow-lg"
+                onClick={() => setOpenUploadModal(true)}
+                className="inline-flex items-center gap-2 px-4 py-2.5 rounded-lg bg-gradient-to-r from-purple-500 to-pink-500 text-white font-semibold hover:from-purple-600 hover:to-pink-600 transition shadow-lg"
               >
-                + Add Vendor
+                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12" />
+                </svg>
+                Upload Documents
               </button>
 
               <button
                 onClick={() => setOpenProductModal(true)}
                 className="inline-flex items-center gap-2 px-4 py-2.5 rounded-lg bg-green-500 text-white font-semibold hover:bg-green-600 transition shadow-lg"
               >
-                + Add Product
+                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
+                </svg>
+                Add Product
               </button>
 
               <Link
@@ -573,6 +589,9 @@ export default function Page() {
                 target="_blank"
                 className="inline-flex items-center gap-2 px-5 py-2.5 rounded-lg bg-white/10 text-white font-semibold hover:bg-white/20 transition shadow-lg"
               >
+                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+                </svg>
                 Export CSV
               </Link>
 
@@ -597,113 +616,6 @@ export default function Page() {
               </button>
             </div>
           </header>
-        </div>
-
-        {/* Upload */}
-        <div className="bg-white/5 border border-white/10 rounded-2xl shadow-2xl p-6 backdrop-blur-sm mb-6">
-          <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-3 mb-4">
-            <h2 className="text-xl font-bold text-slate-200">Upload Documents</h2>
-
-            <div className="flex items-center gap-2">
-              <span className="text-sm text-slate-300">Vendor:</span>
-              <select
-                value={vendorName}
-                onChange={(e) => setVendorName(e.target.value)}
-                className="bg-black/30 border border-white/10 rounded-lg px-3 py-2 text-slate-200"
-              >
-                <option value="">Select vendor</option>
-                {vendors.map((vendor) => (
-                  <option key={vendor.id} value={vendor.name}>
-                    {vendor.name}
-                  </option>
-                ))}
-              </select>
-            </div>
-          </div>
-
-          <section
-            onDragOver={(e) => e.preventDefault()}
-            onDrop={onDrop}
-            className="p-8 rounded-xl border-2 border-dashed border-white/20 bg-gradient-to-br from-white/3 to-white/2 hover:from-white/6 hover:border-cyan-500/50 transition cursor-pointer"
-          >
-            <div className="flex flex-col items-center justify-center text-center">
-              <input
-                ref={fileInputRef}
-                type="file"
-                multiple
-                accept="application/pdf"
-                onChange={handleFileSelect}
-                className="hidden"
-                id="pdf-input"
-              />
-
-              <label htmlFor="pdf-input" className="cursor-pointer">
-                <span className="text-lg text-slate-200 font-medium">
-                  Drag & drop PDF files here
-                </span>
-                <span className="block text-sm text-slate-400 mt-2">
-                  or <span className="text-cyan-300 underline">browse files</span>
-                </span>
-              </label>
-
-              <p className="text-xs text-slate-500 mt-4">
-                Supported: PDF • No PDFs are stored on server
-              </p>
-            </div>
-          </section>
-
-          {files.length > 0 && (
-            <div className="mt-6">
-              <div className="flex items-center justify-between mb-3">
-                <span className="text-sm text-slate-300 font-medium">
-                  {files.length} file(s) selected
-                </span>
-                <button
-                  onClick={clearAllFiles}
-                  className="text-xs text-slate-400 hover:text-white transition"
-                >
-                  Clear all
-                </button>
-              </div>
-
-              <div className="space-y-2 max-h-48 overflow-y-auto">
-                {files.map((f, i) => (
-                  <div
-                    key={`${f.name}-${f.size}-${i}`}
-                    className="flex items-center justify-between bg-white/6 px-4 py-3 rounded-lg"
-                  >
-                    <div className="flex-1 min-w-0">
-                      <div className="text-sm text-slate-200 truncate">{f.name}</div>
-                      <div className="text-xs text-slate-400">
-                        {(f.size / 1024).toFixed(2)} KB
-                      </div>
-                    </div>
-
-                    <button
-                      onClick={() => removeFile(i)}
-                      className="ml-3 text-slate-400 hover:text-red-400 transition"
-                      aria-label="remove file"
-                    >
-                      ×
-                    </button>
-                  </div>
-                ))}
-              </div>
-
-              <button
-                onClick={upload}
-                disabled={loadingUpload || uploadingRef.current}
-                className={classNames(
-                  "mt-4 w-full px-6 py-3 rounded-lg text-white font-semibold shadow-lg transition flex items-center justify-center gap-2",
-                  "bg-gradient-to-r from-purple-500 to-pink-500 hover:scale-[1.02]",
-                  (loadingUpload || uploadingRef.current) &&
-                    "opacity-50 cursor-not-allowed hover:scale-100"
-                )}
-              >
-                {loadingUpload ? "Processing..." : `Upload ${files.length} PDF(s)`}
-              </button>
-            </div>
-          )}
         </div>
 
         {/* Collapsible Documents */}
@@ -854,162 +766,167 @@ export default function Page() {
             </div>
           </div>
 
-          <div className="overflow-x-auto rounded-lg border border-white/10">
-            <table className="min-w-full divide-y divide-white/10 text-sm">
-              <thead className="bg-white/5">
-                <tr className="text-left text-xs text-slate-300 uppercase tracking-wider">
-                  <th className="px-4 py-3 font-semibold">
-                    <input
-                      type="checkbox"
-                      checked={
-                        products.length > 0 &&
-                        selectedProductIds.size === allSelectableCount
-                      }
-                      onChange={(e) =>
-                        e.target.checked ? selectAll() : clearSelection()
-                      }
-                    />
-                  </th>
-
-                  <th className="px-4 py-3 font-semibold">Document</th>
-                  <th className="px-4 py-3 font-semibold">Product Name</th>
-                  <th className="px-4 py-3 font-semibold">SEO Name</th>
-                  <th className="px-4 py-3 font-semibold">Brand</th>
-                  <th className="px-4 py-3 font-semibold">Type</th>
-                  <th className="px-4 py-3 font-semibold">Retail</th>
-                  <th className="px-4 py-3 font-semibold">Sale</th>
-                  <th className="px-4 py-3 font-semibold">Color</th>
-                  <th className="px-4 py-3 font-semibold">Variants</th>
-                  <th className="px-4 py-3 font-semibold">Vendor</th>
-                  <th className="px-4 py-3 font-semibold">Metadata</th>
-
-                  {Array.from(allExtraFields).map((field) => (
-                    <th
-                      key={field}
-                      className="px-4 py-3 font-semibold text-cyan-300"
-                    >
-                      {field}
+          {/* Table Container with relative positioning for tooltips */}
+          <div className="relative">
+            <div className="overflow-x-auto rounded-lg border border-white/10">
+              <table className="min-w-full divide-y divide-white/10 text-sm">
+                <thead className="bg-white/5">
+                  <tr className="text-left text-xs text-slate-300 uppercase tracking-wider">
+                    <th className="px-4 py-3 font-semibold">
+                      <input
+                        type="checkbox"
+                        checked={
+                          products.length > 0 &&
+                          selectedProductIds.size === allSelectableCount
+                        }
+                        onChange={(e) =>
+                          e.target.checked ? selectAll() : clearSelection()
+                        }
+                      />
                     </th>
-                  ))}
-                </tr>
-              </thead>
 
-              <tbody className="divide-y divide-white/10">
-                {loadingProducts ? (
-                  <tr>
-                    <td
-                      colSpan={12 + allExtraFields.size}
-                      className="px-4 py-16 text-center"
-                    >
-                      <div className="flex flex-col items-center justify-center">
-                        <svg className="animate-spin h-8 w-8 text-cyan-400 mb-3" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
-                          <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
-                          <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8z"></path>
+                    <th className="px-4 py-3 font-semibold">Product Name</th>
+                    <th className="px-4 py-3 font-semibold">SEO Name</th>
+                    <th className="px-4 py-3 font-semibold">Brand</th>
+                    <th className="px-4 py-3 font-semibold">Type</th>
+                    <th className="px-4 py-3 font-semibold">Retail</th>
+                    <th className="px-4 py-3 font-semibold">Sale</th>
+                    <th className="px-4 py-3 font-semibold">Color</th>
+                    <th className="px-4 py-3 font-semibold text-center">
+                      <Tooltip content="Document Source">
+                        <svg className="w-4 h-4 mx-auto cursor-help" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
                         </svg>
-                        <span className="text-cyan-300 font-semibold text-lg">Loading products...</span>
-                      </div>
-                    </td>
+                      </Tooltip>
+                    </th>
+                    <th className="px-4 py-3 font-semibold">Variants</th>
+                    <th className="px-4 py-3 font-semibold">Vendor</th>
+                    <th className="px-4 py-3 font-semibold">Metadata</th>
+
+                    {Array.from(allExtraFields).map((field) => (
+                      <th
+                        key={field}
+                        className="px-4 py-3 font-semibold text-cyan-300"
+                      >
+                        {field}
+                      </th>
+                    ))}
                   </tr>
-                ) : products.length === 0 ? (
-                  <tr>
-                    <td
-                      colSpan={12 + allExtraFields.size}
-                      className="px-4 py-16 text-center"
-                    >
-                      <div className="flex flex-col items-center justify-center">
-                        <svg width="64" height="64" fill="none" className="mb-3">
-                          <circle cx="32" cy="32" r="30" fill="#0ea5e9" fillOpacity="0.08" />
-                          <path d="M20 40c0-4 8-6 12-6s12 2 12 6v2H20v-2Z" fill="#38bdf8" />
-                          <ellipse cx="32" cy="28" rx="6" ry="8" fill="#38bdf8" />
-                          <ellipse cx="32" cy="28" rx="3" ry="4" fill="#0ea5e9" />
-                        </svg>
-                        <span className="text-slate-400 font-semibold text-lg">
-                          No product data available
-                        </span>
-                        <span className="text-slate-500 text-sm mt-1">
-                          Upload a PDF to get started!
-                        </span>
-                      </div>
-                    </td>
-                  </tr>
-                ) : (
-                  products.map((p, idx) => (
-                    <tr key={p.id || idx} className="hover:bg-white/5 transition">
-                      <td className="px-4 py-3">
-                        <input
-                          type="checkbox"
-                          checked={p.id ? selectedProductIds.has(p.id) : false}
-                          onChange={() => toggleSelectProduct(p.id)}
-                        />
+                </thead>
+
+                <tbody className="divide-y divide-white/10">
+                  {loadingProducts ? (
+                    <tr>
+                      <td
+                        colSpan={12 + allExtraFields.size}
+                        className="px-4 py-16 text-center"
+                      >
+                        <div className="flex flex-col items-center justify-center">
+                          <svg className="animate-spin h-8 w-8 text-cyan-400 mb-3" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                            <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+                            <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8z"></path>
+                          </svg>
+                          <span className="text-cyan-300 font-semibold text-lg">Loading products...</span>
+                        </div>
                       </td>
-
-                      <td className="px-4 py-3 text-slate-300">{p.document}</td>
-
-                      <td className="px-4 py-3 text-white font-medium">
-                        {p.product_name}
-                      </td>
-
-                      <td className="px-4 py-3 text-slate-300">
-                        {p.seo_name ? (
-                          <span className="text-purple-300">{p.seo_name}</span>
-                        ) : (
-                          <span className="text-slate-500 text-xs">—</span>
-                        )}
-                      </td>
-
-                      <td className="px-4 py-3 text-slate-300">{p.brand_name}</td>
-                      <td className="px-4 py-3 text-slate-400">{p.product_type}</td>
-
-                      <td className="px-4 py-3 text-green-400">${p.retail_price}</td>
-                      <td className="px-4 py-3 text-cyan-400">${p.sale_price}</td>
-
-                      <td className="px-4 py-3">
-                        {p.color ? (
-                          <span className="inline-block px-2 py-1 rounded text-xs bg-white/10">
-                            {p.color}
-                          </span>
-                        ) : (
-                          ""
-                        )}
-                      </td>
-
-                      <td className="px-4 py-3 text-slate-400">{p.variants}</td>
-                      <td className="px-4 py-3 text-slate-300">{p.vendor_name}</td>
-
-                      <td className="px-4 py-3 text-slate-300">
-                        {p.metadata && Object.keys(p.metadata).length > 0 ? (
-                          <div className="flex flex-col gap-2">
-                            <details className="cursor-pointer">
-                              <summary className="text-cyan-300 text-xs">
-                                View
-                              </summary>
-                              <pre className="mt-2 text-xs bg-black/30 p-2 rounded max-w-[420px] overflow-x-auto">
-                                {JSON.stringify(p.metadata, null, 2)}
-                              </pre>
-                            </details>
-
-                            <button
-                              onClick={() => copyMetadata(p)}
-                              className="text-xs px-2 py-1 rounded bg-white/10 hover:bg-white/20 transition w-fit"
-                            >
-                              Copy JSON
-                            </button>
-                          </div>
-                        ) : (
-                          <span className="text-slate-500 text-xs">—</span>
-                        )}
-                      </td>
-
-                      {Array.from(allExtraFields).map((field) => (
-                        <td key={field} className="px-4 py-3 text-cyan-200">
-                          {p.extra_fields?.[field] ?? "-"}
-                        </td>
-                      ))}
                     </tr>
-                  ))
-                )}
-              </tbody>
-            </table>
+                  ) : products.length === 0 ? (
+                    <tr>
+                      <td
+                        colSpan={12 + allExtraFields.size}
+                        className="px-4 py-16 text-center"
+                      >
+                        <div className="flex flex-col items-center justify-center">
+                          <svg width="64" height="64" fill="none" className="mb-3">
+                            <circle cx="32" cy="32" r="30" fill="#0ea5e9" fillOpacity="0.08" />
+                            <path d="M20 40c0-4 8-6 12-6s12 2 12 6v2H20v-2Z" fill="#38bdf8" />
+                            <ellipse cx="32" cy="28" rx="6" ry="8" fill="#38bdf8" />
+                            <ellipse cx="32" cy="28" rx="3" ry="4" fill="#0ea5e9" />
+                          </svg>
+                          <span className="text-slate-400 font-semibold text-lg">
+                            No product data available
+                          </span>
+                          <span className="text-slate-500 text-sm mt-1">
+                            Upload a PDF to get started!
+                          </span>
+                        </div>
+                      </td>
+                    </tr>
+                  ) : (
+                    products.map((p, idx) => (
+                      <tr key={p.id || idx} className="hover:bg-white/5 transition">
+                        <td className="px-4 py-3">
+                          <input
+                            type="checkbox"
+                            checked={p.id ? selectedProductIds.has(p.id) : false}
+                            onChange={() => toggleSelectProduct(p.id)}
+                          />
+                        </td>
+
+                        <td className="px-4 py-3 text-white font-medium">
+                          {p.product_name}
+                        </td>
+
+                        <td className="px-4 py-3 text-slate-300">
+                          {p.seo_name ? (
+                            <span className="text-purple-300">{p.seo_name}</span>
+                          ) : (
+                            <span className="text-slate-500 text-xs">—</span>
+                          )}
+                        </td>
+
+                        <td className="px-4 py-3 text-slate-300">{p.brand_name}</td>
+                        <td className="px-4 py-3 text-slate-400">{p.product_type}</td>
+
+                        <td className="px-4 py-3 text-green-400">${p.retail_price}</td>
+                        <td className="px-4 py-3 text-cyan-400">${p.sale_price}</td>
+
+                        <td className="px-4 py-3">
+                          <ColorBalls colorString={p.color} />
+                        </td>
+
+                        <td className="px-4 py-3 text-center">
+                          <DocumentIcon documentName={p.document} />
+                        </td>
+
+                        <td className="px-4 py-3 text-slate-400">{p.variants}</td>
+                        <td className="px-4 py-3 text-slate-300">{p.vendor_name}</td>
+
+                        <td className="px-4 py-3 text-slate-300">
+                          {p.metadata && Object.keys(p.metadata).length > 0 ? (
+                            <div className="flex flex-col gap-2">
+                              <details className="cursor-pointer">
+                                <summary className="text-cyan-300 text-xs">
+                                  View
+                                </summary>
+                                <pre className="mt-2 text-xs bg-black/30 p-2 rounded max-w-[420px] overflow-x-auto">
+                                  {JSON.stringify(p.metadata, null, 2)}
+                                </pre>
+                              </details>
+
+                              <button
+                                onClick={() => copyMetadata(p)}
+                                className="text-xs px-2 py-1 rounded bg-white/10 hover:bg-white/20 transition w-fit"
+                              >
+                                Copy JSON
+                              </button>
+                            </div>
+                          ) : (
+                            <span className="text-slate-500 text-xs">—</span>
+                          )}
+                        </td>
+
+                        {Array.from(allExtraFields).map((field) => (
+                          <td key={field} className="px-4 py-3 text-cyan-200">
+                            {p.extra_fields?.[field] ?? "-"}
+                          </td>
+                        ))}
+                      </tr>
+                    ))
+                  )}
+                </tbody>
+              </table>
+            </div>
           </div>
 
           {/* ✅ Pagination */}
@@ -1059,17 +976,20 @@ export default function Page() {
       </div>
 
       {/* MODALS */}
-      <AddVendorModal
-        open={openVendorModal}
-        onClose={() => setOpenVendorModal(false)}
-        refresh={fetchVendors}
-      />
-
       <AddProductModal
         open={openProductModal}
         onClose={() => setOpenProductModal(false)}
         refresh={fetchProducts}
         vendors={vendors}
+      />
+
+      <UploadDocumentsModal
+        open={openUploadModal}
+        onClose={() => setOpenUploadModal(false)}
+        vendors={vendors}
+        refreshDocuments={fetchDocs}
+        refreshProducts={fetchProducts}
+        refreshVendors={fetchVendors}
       />
     </div>
   );

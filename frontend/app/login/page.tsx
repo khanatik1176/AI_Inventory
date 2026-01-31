@@ -3,6 +3,7 @@
 import { useState } from "react";
 import { api } from "@/lib/api";
 import { useRouter } from "next/navigation";
+import { useToast } from "@/contexts/ToastContext";
 import Link from "next/link";
 
 export default function LoginPage() {
@@ -11,6 +12,7 @@ export default function LoginPage() {
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
   const router = useRouter();
+  const { addToast } = useToast();
 
   const validateForm = () => {
     if (!email.trim()) {
@@ -43,9 +45,19 @@ export default function LoginPage() {
         password,
       });
       localStorage.setItem("access_token", res.data.access);
-      router.push("/");
+      
+      // Show success toast
+      addToast("success", "Logged in successfully!");
+      
+      // Redirect after a short delay
+      setTimeout(() => {
+        router.push("/");
+      }, 1000);
+      
     } catch (e: any) {
-      setError(e.response?.data?.error || "Invalid email or password");
+      const errorMessage = e.response?.data?.error || "Invalid email or password";
+      setError(errorMessage);
+      addToast("error", errorMessage);
     } finally {
       setLoading(false);
     }

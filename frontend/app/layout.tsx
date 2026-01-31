@@ -1,5 +1,6 @@
 import "./globals.css";
-import { Toaster } from "react-hot-toast";
+import { ToastProvider } from '@/contexts/ToastContext';
+import { ToastContainer } from '@/app/components/ToastContainer';
 
 export default function RootLayout({
   children,
@@ -8,14 +9,11 @@ export default function RootLayout({
 }) {
   return (
     <html lang="en">
-      <body suppressHydrationWarning>
-        <Toaster
-          position="top-right"
-          toastOptions={{
-            style: { background: "#0b1220", color: "#fff" },
-          }}
-        />
-        {children}
+      <body suppressHydrationWarning={true}>
+        <ToastProvider>
+          {children}
+          <ToastContainer />
+        </ToastProvider>
       </body>
     </html>
   );

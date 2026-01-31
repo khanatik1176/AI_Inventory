@@ -3,6 +3,7 @@
 import { useState } from "react";
 import { api } from "@/lib/api";
 import { useRouter } from "next/navigation";
+import { useToast } from "@/contexts/ToastContext";
 import Link from "next/link";
 
 export default function SignupPage() {
@@ -12,6 +13,7 @@ export default function SignupPage() {
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
   const router = useRouter();
+  const { addToast } = useToast();
 
   const validatePassword = (password: string) => {
     const hasMinLength = password.length >= 8;
@@ -81,9 +83,19 @@ export default function SignupPage() {
         email,
         password,
       });
-      router.push("/login");
+      
+      // Show success toast
+      addToast("success", "Account created successfully! Please sign in.");
+      
+      // Redirect after a short delay
+      setTimeout(() => {
+        router.push("/login");
+      }, 1000);
+      
     } catch (e: any) {
-      setError(e.response?.data?.error || "Signup failed. Please try again.");
+      const errorMessage = e.response?.data?.error || "Signup failed. Please try again.";
+      setError(errorMessage);
+      addToast("error", errorMessage);
     } finally {
       setLoading(false);
     }
