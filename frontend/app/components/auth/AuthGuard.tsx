@@ -15,7 +15,7 @@ export default function AuthGuard({
     if (!isLoggedIn()) {
       router.replace("/login");
     }
-  }, []);
+  }, [router]);
 
   return <>{children}</>;
 }

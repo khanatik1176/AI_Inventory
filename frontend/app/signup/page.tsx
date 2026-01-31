@@ -18,7 +18,7 @@ export default function SignupPage() {
     const hasUpperCase = /[A-Z]/.test(password);
     const hasLowerCase = /[a-z]/.test(password);
     const hasNumber = /\d/.test(password);
-    const hasSpecialChar = /[!@#$%^&*()_+\-=\[\]{};':"\\|,.<>\/?]/.test(password);
+    const hasSpecialChar = /[!@#$%^&*()_+\-=[\]{};':"\\|,.<>/?]/.test(password);
 
     return {
       hasMinLength,
@@ -90,7 +90,7 @@ export default function SignupPage() {
   };
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
-    if (e.key === 'Enter') {
+    if (e.key === "Enter") {
       signup();
     }
   };
@@ -200,28 +200,28 @@ export default function SignupPage() {
         <div className="mt-4 p-3 bg-white/5 rounded-lg">
           <p className="text-xs text-slate-400 mb-2">Password requirements:</p>
           <ul className="text-xs text-slate-500 space-y-1">
-            <li className={`flex items-center gap-2 ${passwordValidation.hasMinLength ? 'text-green-400' : ''}`}>
-              <span className={`w-1 h-1 rounded-full ${passwordValidation.hasMinLength ? 'bg-green-400' : 'bg-slate-500'}`}></span>
+            <li className={`flex items-center gap-2 ${passwordValidation.hasMinLength ? "text-green-400" : ""}`}>
+              <span className={`w-1 h-1 rounded-full ${passwordValidation.hasMinLength ? "bg-green-400" : "bg-slate-500"}`}></span>
               At least 8 characters long
             </li>
-            <li className={`flex items-center gap-2 ${passwordValidation.hasUpperCase ? 'text-green-400' : ''}`}>
-              <span className={`w-1 h-1 rounded-full ${passwordValidation.hasUpperCase ? 'bg-green-400' : 'bg-slate-500'}`}></span>
+            <li className={`flex items-center gap-2 ${passwordValidation.hasUpperCase ? "text-green-400" : ""}`}>
+              <span className={`w-1 h-1 rounded-full ${passwordValidation.hasUpperCase ? "bg-green-400" : "bg-slate-500"}`}></span>
               One uppercase letter (A-Z)
             </li>
-            <li className={`flex items-center gap-2 ${passwordValidation.hasLowerCase ? 'text-green-400' : ''}`}>
-              <span className={`w-1 h-1 rounded-full ${passwordValidation.hasLowerCase ? 'bg-green-400' : 'bg-slate-500'}`}></span>
+            <li className={`flex items-center gap-2 ${passwordValidation.hasLowerCase ? "text-green-400" : ""}`}>
+              <span className={`w-1 h-1 rounded-full ${passwordValidation.hasLowerCase ? "bg-green-400" : "bg-slate-500"}`}></span>
               One lowercase letter (a-z)
             </li>
-            <li className={`flex items-center gap-2 ${passwordValidation.hasNumber ? 'text-green-400' : ''}`}>
-              <span className={`w-1 h-1 rounded-full ${passwordValidation.hasNumber ? 'bg-green-400' : 'bg-slate-500'}`}></span>
+            <li className={`flex items-center gap-2 ${passwordValidation.hasNumber ? "text-green-400" : ""}`}>
+              <span className={`w-1 h-1 rounded-full ${passwordValidation.hasNumber ? "bg-green-400" : "bg-slate-500"}`}></span>
               One number (0-9)
             </li>
-            <li className={`flex items-center gap-2 ${passwordValidation.hasSpecialChar ? 'text-green-400' : ''}`}>
-              <span className={`w-1 h-1 rounded-full ${passwordValidation.hasSpecialChar ? 'bg-green-400' : 'bg-slate-500'}`}></span>
+            <li className={`flex items-center gap-2 ${passwordValidation.hasSpecialChar ? "text-green-400" : ""}`}>
+              <span className={`w-1 h-1 rounded-full ${passwordValidation.hasSpecialChar ? "bg-green-400" : "bg-slate-500"}`}></span>
               One special character (!@#$%^&*)
             </li>
-            <li className={`flex items-center gap-2 ${password && confirmPassword && password === confirmPassword ? 'text-green-400' : ''}`}>
-              <span className={`w-1 h-1 rounded-full ${password && confirmPassword && password === confirmPassword ? 'bg-green-400' : 'bg-slate-500'}`}></span>
+            <li className={`flex items-center gap-2 ${password && confirmPassword && password === confirmPassword ? "text-green-400" : ""}`}>
+              <span className={`w-1 h-1 rounded-full ${password && confirmPassword && password === confirmPassword ? "bg-green-400" : "bg-slate-500"}`}></span>
               Passwords must match
             </li>
           </ul>

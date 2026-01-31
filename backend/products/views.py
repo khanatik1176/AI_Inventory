@@ -312,6 +312,7 @@ class GenerateOnlineSeoNameView(APIView):
         return Response({"updated": updated, "failed": failed})
 
 
+
 class GenerateFormattedNameView(APIView):
     def post(self, request):
         ids = request.data.get("product_ids", [])
@@ -329,8 +330,45 @@ class GenerateFormattedNameView(APIView):
                     failed.append({"id": p.id, "error": "already generated once"})
                     continue
 
-                base = p.base_name or p.product_name
-                new_name = slug_join(p.brand_name, base, p.product_type, p.seo_name)
+                # Use base_name only - if not set, this is an error case
+                if not p.base_name or not p.base_name.strip():
+                    failed.append({"id": p.id, "error": "base_name missing - cannot generate formatted name"})
+                    continue
+
+                # Build the formatted name from individual components
+                # Only include non-empty, non-duplicate parts
+                parts = []
+                
+                # Add brand name if exists and not already in base_name
+                brand = safe_str(p.brand_name).strip()
+                base = safe_str(p.base_name).strip()
+                ptype = safe_str(p.product_type).strip()
+                seo = safe_str(p.seo_name).strip()
+                
+                if brand and brand.lower() not in base.lower():
+                    parts.append(brand)
+                
+                # Add base name (model/product identifier)
+                if base:
+                    parts.append(base)
+                
+                # Add product type if exists and not already in base_name
+                if ptype and ptype.lower() not in base.lower():
+                    parts.append(ptype)
+                
+                # Add SEO name if exists and not already in other parts
+                if seo:
+                    combined_so_far = " ".join(parts).lower()
+                    # Only add SEO parts that aren't already present
+                    seo_words = seo.split()
+                    new_seo_parts = []
+                    for word in seo_words:
+                        if word.lower() not in combined_so_far:
+                            new_seo_parts.append(word)
+                    if new_seo_parts:
+                        parts.append(" ".join(new_seo_parts))
+
+                new_name = "-".join(parts) if parts else p.base_name
 
                 p.product_name = new_name
                 p.formatted_name_generated = True
